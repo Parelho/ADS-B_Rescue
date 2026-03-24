@@ -1,17 +1,8 @@
 import pyModeS as pms
 from pyModeS.extra.tcpclient import TcpClient
 
-aircrafts = []
+aircrafts = {}
 det_coords = [-23.647143, -46.574283]
-
-class Aircraft():
-    icao: int
-    lat: float
-    lon: float
-    speed: int
-    heading: float
-    vertical_rate: int
-    speed_type: str
 
 # define your custom class by extending the TcpClient
 #   - implement your handle_messages() methods
@@ -40,7 +31,7 @@ class ADSBClient(TcpClient):
 
             icao = pms.adsb.icao(msg)
             if icao not in aircrafts:
-                aircraft: Aircraft = {
+                aircrafts[icao] = {
                     "icao": icao,
                     "lat": None,
                     "lon": None,
@@ -49,9 +40,8 @@ class ADSBClient(TcpClient):
                     "vertical_rate": None,
                     "speed_type": None
                 }
-                aircrafts.append(aircraft)
 
-            aircraft = next(item for item in aircrafts if item["icao"] == icao)
+            aircraft = aircrafts[icao]
             
             tc = pms.adsb.typecode(msg)
 
