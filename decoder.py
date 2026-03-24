@@ -14,7 +14,6 @@ class ADSBClient(TcpClient):
         # print(messages)
         for msg, ts in messages:
             msg = msg[12:]
-            # print(msg)
             if len(msg) != 28:  # wrong data length
                 # print("Data length wrong")
                 continue
@@ -28,6 +27,10 @@ class ADSBClient(TcpClient):
             if pms.crc(msg) != 0:  # CRC fail
                 print("CRC failed")
                 continue
+            
+            print(msg)
+            with open("output.txt", "a") as f:
+                f.write(str(msg) + "\n")
 
             icao = pms.adsb.icao(msg)
             if icao not in aircrafts:
@@ -58,7 +61,7 @@ class ADSBClient(TcpClient):
                 aircraft["vertical_rate"] = velocity[2]
                 aircraft["speed_type"] = velocity[3]
 
-            print(aircrafts)
+            # print(aircrafts)
 
 # run new client, change the host, port, and rawtype if needed
 client = ADSBClient(host='10.33.133.22', port=30002, rawtype='raw')
