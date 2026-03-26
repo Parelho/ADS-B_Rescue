@@ -28,9 +28,9 @@ class ADSBClient(TcpClient):
                 print("CRC failed")
                 continue
             
-            print(msg)
-            with open("output.txt", "a") as f:
-                f.write(str(msg) + "\n")
+            # print(msg)
+            # with open("output.txt", "a") as f:
+            #     f.write(str(msg) + "\n")
 
             icao = pms.adsb.icao(msg)
             if icao not in aircrafts:
@@ -50,12 +50,12 @@ class ADSBClient(TcpClient):
 
             if 5 <= tc <= 18:
                 lat, lon = pms.adsb.position_with_ref(msg, det_coords[0], det_coords[1]) # aircraft positon based on base station position
-                # print(f"lat: {lat}, lon: {lon}")
+                print(f"lat: {lat}, lon: {lon}")
                 aircraft["lat"] = lat
                 aircraft["lon"] = lon
             elif tc == 19:
                 velocity = pms.adsb.velocity(msg)
-                # print(f"speed: {velocity[0]}, heading: {velocity[1]}, vertical rate: {velocity[2]}, speed type: {velocity[3]}")
+                print(f"speed: {velocity[0]}, heading: {velocity[1]}, vertical rate: {velocity[2]}, speed type: {velocity[3]}")
                 aircraft["speed"] = velocity[0]
                 aircraft["heading"] = velocity[1]
                 aircraft["vertical_rate"] = velocity[2]
