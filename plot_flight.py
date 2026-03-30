@@ -14,7 +14,8 @@ rows = []
 with open(file_path, newline='') as f:
     reader = csv.DictReader(f)
     for row in reader:
-        rows.append(row)
+        if row["hour"] == "1774461600":
+            rows.append(row)
 
 points = []
 
