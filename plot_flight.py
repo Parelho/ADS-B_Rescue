@@ -32,52 +32,56 @@ def parse_track(track_str):
     return coords
 
 output_rows = []
+
 for row in rows:
     track = row["track"]
+    firstseen = row["firstseen"]
     
     if track:
         coords = parse_track(track)
         
         for t, lat, lon in coords:
             output_rows.append({
+                "firstseen": int(firstseen),
                 "time": t,
                 "lat": lat,
                 "lon": lon
             })
             points.append(Point(lon, lat))
 
-# Create GeoDataFrame of points
-gdf_points = gpd.GeoDataFrame(geometry=points, crs="EPSG:4326")
+# # Create GeoDataFrame of points
+# gdf_points = gpd.GeoDataFrame(geometry=points, crs="EPSG:4326")
 
-# Create LineString
-if len(points) > 1:
-    line = LineString(points)
-    gdf_line = gpd.GeoDataFrame(geometry=[line], crs="EPSG:4326")
+# # Create LineString
+# if len(points) > 1:
+#     line = LineString(points)
+#     gdf_line = gpd.GeoDataFrame(geometry=[line], crs="EPSG:4326")
 
-# Plot
-fig, ax = plt.subplots(figsize=(10, 10))
+# # Plot
+# fig, ax = plt.subplots(figsize=(10, 10))
 
-if len(points) > 1:
-    gdf_line.plot(ax=ax)
+# if len(points) > 1:
+#     gdf_line.plot(ax=ax)
 
-gdf_points.plot(ax=ax, markersize=5)
-
-# plt.show()
+# gdf_points.plot(ax=ax, markersize=5)
 
 # Export to KML
-kml = simplekml.Kml()
+# kml = simplekml.Kml()
 
-for pt in points:
-    kml.newpoint(coords=[(pt.x, pt.y)])
+# for pt in points:
+#     kml.newpoint(coords=[(pt.x, pt.y)])
 
-if len(points) > 1:
-    coords = [(pt.x, pt.y) for pt in points]
-    kml.newlinestring(name="Flight Path", coords=coords)
+# if len(points) > 1:
+#     coords = [(pt.x, pt.y) for pt in points]
+#     kml.newlinestring(name="Flight Path", coords=coords)
 
-kml.save("flight_path.kml")
+# kml.save("flight_path.kml")
 
-output_rows = sorted(output_rows, key=lambda x: x["time"])
+output_rows = sorted(output_rows, key=lambda x: (x["firstseen"], x["time"]))
 with open("trajectory.csv", "w", newline='') as f:
-    writer = csv.DictWriter(f, fieldnames=["time", "lat", "lon"])
+    writer = csv.DictWriter(
+        f, 
+        fieldnames=["firstseen", "time", "lat", "lon"]
+    )
     writer.writeheader()
     writer.writerows(output_rows)
