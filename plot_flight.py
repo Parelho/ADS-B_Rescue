@@ -1,38 +1,55 @@
 import csv
-import pyModeS as pms
 import geopandas as gpd
 from shapely.geometry import Point, LineString
 import matplotlib.pyplot as plt
-import math
 import simplekml
+import re
 
 file_path = "output.csv"
 
 rows = []
 
-# Read CSV
 with open(file_path, newline='') as f:
     reader = csv.DictReader(f)
     for row in reader:
-        if row["hour"] == "1774461600":
+        if row["day"] and int(row["day"]) >= 1485734400:
             rows.append(row)
 
 points = []
 
-# Decode positions
-for i in range(len(rows) - 1):
-    row = rows[i]
+# Function to parse track field
+def parse_track(track_str):
+    coords = []
+    
+    matches = re.findall(
+        r'time=([0-9]+), latitude=([\-0-9.]+), longitude=([\-0-9.]+)',
+        track_str
+    )
+    
+    for t, lat, lon in matches:
+        coords.append((int(t), float(lat), float(lon)))
+    
+    return coords
 
-    if row["lat"] and row["lon"]:
-        points.append(Point(row["lon"], row["lat"]))
-
-    if i > 9000:
-        break
+output_rows = []
+for row in rows:
+    track = row["track"]
+    
+    if track:
+        coords = parse_track(track)
+        
+        for t, lat, lon in coords:
+            output_rows.append({
+                "time": t,
+                "lat": lat,
+                "lon": lon
+            })
+            points.append(Point(lon, lat))
 
 # Create GeoDataFrame of points
 gdf_points = gpd.GeoDataFrame(geometry=points, crs="EPSG:4326")
 
-# Create a LineString (flight path)
+# Create LineString
 if len(points) > 1:
     line = LineString(points)
     gdf_line = gpd.GeoDataFrame(geometry=[line], crs="EPSG:4326")
@@ -40,27 +57,27 @@ if len(points) > 1:
 # Plot
 fig, ax = plt.subplots(figsize=(10, 10))
 
-# Plot path
 if len(points) > 1:
     gdf_line.plot(ax=ax)
 
-# Plot points
 gdf_points.plot(ax=ax, markersize=5)
 
-# plt.title("Flight Path")
-# plt.xlabel("Longitude")
-# plt.ylabel("Latitude")
 # plt.show()
 
+# Export to KML
 kml = simplekml.Kml()
-# Add points (optional)
+
 for pt in points:
     kml.newpoint(coords=[(pt.x, pt.y)])
 
-# Add flight path (line)
 if len(points) > 1:
     coords = [(pt.x, pt.y) for pt in points]
     kml.newlinestring(name="Flight Path", coords=coords)
 
-# Save file
 kml.save("flight_path.kml")
+
+output_rows = sorted(output_rows, key=lambda x: x["time"])
+with open("trajectory.csv", "w", newline='') as f:
+    writer = csv.DictWriter(f, fieldnames=["time", "lat", "lon"])
+    writer.writeheader()
+    writer.writerows(output_rows)
