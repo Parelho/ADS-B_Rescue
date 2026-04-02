@@ -22,12 +22,12 @@ def parse_track(track_str):
     coords = []
     
     matches = re.findall(
-        r'time=([0-9]+), latitude=([\-0-9.]+), longitude=([\-0-9.]+)',
+        r'time=([0-9]+), latitude=([\-0-9.]+), longitude=([\-0-9.]+).*?heading=([\-0-9.]+)',
         track_str
     )
     
-    for t, lat, lon in matches:
-        coords.append((int(t), float(lat), float(lon)))
+    for t, lat, lon, heading in matches:
+        coords.append((int(t), float(lat), float(lon), float(heading)))
     
     return coords
 
@@ -40,12 +40,13 @@ for row in rows:
     if track:
         coords = parse_track(track)
         
-        for t, lat, lon in coords:
+        for t, lat, lon, heading in coords:
             output_rows.append({
                 "firstseen": int(firstseen),
                 "time": t,
                 "lat": lat,
-                "lon": lon
+                "lon": lon,
+                "heading": heading
             })
             points.append(Point(lon, lat))
 
@@ -81,7 +82,7 @@ output_rows = sorted(output_rows, key=lambda x: (x["firstseen"], x["time"]))
 with open("trajectory.csv", "w", newline='') as f:
     writer = csv.DictWriter(
         f, 
-        fieldnames=["firstseen", "time", "lat", "lon"]
+        fieldnames=["firstseen", "time", "lat", "lon", "heading"]
     )
     writer.writeheader()
     writer.writerows(output_rows)
