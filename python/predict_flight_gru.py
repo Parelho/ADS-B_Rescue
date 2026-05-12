@@ -1,602 +1,505 @@
-import csv
-import numpy as np
+import os
+import math
 import random
-from collections import defaultdict
+import argparse
+from dataclasses import dataclass
+from typing import List, Optional, Sequence, Tuple
 
+import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
 
-from torch.cuda.amp import autocast, GradScaler
 
-import simplekml
+# =========================================================
+# Reproducibility
+# =========================================================
 
-# =========================
-# PERFORMANCE SETTINGS
-# =========================
-torch.backends.cudnn.benchmark = True
-torch.set_float32_matmul_precision("high")
+def seed_everything(seed: int = 42) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = False
+    torch.backends.cudnn.benchmark = True
 
-# =========================
-# CONFIG
-# =========================
-SEQ_LEN = 128
 
-INPUT_LEN = 8
-FUTURE_LEN = 2
+# =========================================================
+# Config
+# =========================================================
 
-STRIDE = 1
+FEATURE_COLS = ["lat", "lon", "altitude"]
+TARGET_COLS = ["lat", "lon", "altitude"]
 
-BATCH_SIZE = 4096
-EPOCHS = 200
+# Lat/lon matter most. Altitude is only a small helper signal.
+TARGET_WEIGHTS = np.array([0.33, 0.33, 0.34], dtype=np.float32)
 
-LR = 1e-3
-HIDDEN_SIZE = 128
+# Flight identity: one flight is identified by the firstseen timestamp
+# and the airport pair.
+KEY_COLS = ["firstseen", "estdepartureairport", "estarrivalairport"]
 
-DEVICE = torch.device(
-    "cuda" if torch.cuda.is_available() else "cpu"
-)
+TIME_CANDIDATES = ["time", "timestamp", "lastseen", "firstseen", "time_position"]
 
-print(DEVICE)
 
-# =========================
-# LOAD DATA
-# =========================
-file_path = "trajectory.csv"
+@dataclass
+class FlightSample:
+    key: Tuple[str, str, str]
+    values: np.ndarray  # (T, 3) float32 in original units
+    times: Optional[np.ndarray] = None
 
-flights = defaultdict(list)
 
-with open(file_path, newline='') as f:
+# =========================================================
+# Data loading / cleaning
+# =========================================================
 
-    reader = csv.DictReader(f)
+def load_adsb_csv(csv_path: str) -> pd.DataFrame:
+    df = pd.read_csv(csv_path)
+    df.columns = df.columns.str.strip().str.lower()
 
-    for row in reader:
+    required = set(KEY_COLS + FEATURE_COLS)
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"CSV is missing required columns: {sorted(missing)}")
 
-        fs = int(row["firstseen"])
+    # Make the numeric columns numeric.
+    for col in FEATURE_COLS + ["firstseen", "time"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
-        dep = row["estdepartureairport"]
-        arr = row["estarrivalairport"]
+    # Sort by flight id + time so each flight becomes an ordered trajectory.
+    sort_cols = KEY_COLS + (["time"] if "time" in df.columns else [])
+    df = df.sort_values(sort_cols, kind="mergesort").reset_index(drop=True)
 
-        key = (fs, dep, arr)
+    df = df.dropna(subset=KEY_COLS + FEATURE_COLS).reset_index(drop=True)
 
-        t = int(row["time"])
+    print(f"[data] Loaded {len(df):,} rows from '{csv_path}'")
+    return df
 
-        lat = float(row["lat"])
-        lon = float(row["lon"])
 
-        heading = float(row["heading"])
+def split_flights(
+    df: pd.DataFrame,
+    val_ratio: float = 0.15,
+    test_ratio: float = 0.15,
+    seed: int = 42,
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    flight_keys = df.groupby(KEY_COLS, sort=False).size().index.tolist()
 
-        flights[key].append(
-            (t, lat, lon, heading)
-        )
-
-# =========================
-# SORT FLIGHTS
-# =========================
-for key in flights:
-
-    flights[key] = sorted(
-        flights[key],
-        key=lambda x: x[0]
+    train_keys, temp_keys = train_test_split(
+        flight_keys,
+        test_size=val_ratio + test_ratio,
+        random_state=seed,
     )
 
-# =========================
-# HELPERS
-# =========================
-def resample_path(path, target_len):
-
-    x_old = np.linspace(0, 1, len(path))
-    x_new = np.linspace(0, 1, target_len)
-
-    resampled = np.zeros(
-        (target_len, path.shape[1]),
-        dtype=np.float32
+    rel_test = test_ratio / (val_ratio + test_ratio)
+    val_keys, test_keys = train_test_split(
+        temp_keys,
+        test_size=rel_test,
+        random_state=seed,
     )
 
-    for i in range(path.shape[1]):
+    def _subset(keys: Sequence[Tuple[str, str, str]]) -> pd.DataFrame:
+        mask = df.set_index(KEY_COLS).index.isin(keys)
+        return df.loc[mask].copy().reset_index(drop=True)
 
-        resampled[:, i] = np.interp(
-            x_new,
-            x_old,
-            path[:, i]
-        )
+    train_df = _subset(train_keys)
+    val_df = _subset(val_keys)
+    test_df = _subset(test_keys)
 
-    return resampled
-
-# =========================
-# BUILD TRAJECTORIES
-# =========================
-all_paths = []
-flight_refs = []
-
-for key, flight in flights.items():
-
-    if len(flight) < 50:
-        continue
-
-    coords = []
-
-    prev_lat = flight[0][1]
-    prev_lon = flight[0][2]
-
-    for t, lat, lon, heading in flight:
-
-        dlat = lat - prev_lat
-        dlon = lon - prev_lon
-
-        coords.append([
-            dlat,
-            dlon,
-            np.sin(np.radians(heading)),
-            np.cos(np.radians(heading))
-        ])
-
-        prev_lat = lat
-        prev_lon = lon
-
-    coords = np.array(
-        coords,
-        dtype=np.float32
+    print(
+        f"[split] Train flights={len(train_keys)} Val flights={len(val_keys)} Test flights={len(test_keys)}"
     )
+    return train_df, val_df, test_df
 
-    path = resample_path(
-        coords,
-        SEQ_LEN
-    )
 
-    all_paths.append(path)
+def group_flights(df: pd.DataFrame) -> List[FlightSample]:
+    flights: List[FlightSample] = []
+    time_col = next((c for c in TIME_CANDIDATES if c in df.columns), None)
 
-    flight_refs.append(flight)
+    for key, grp in df.groupby(KEY_COLS, sort=False):
+        if len(grp) < 6:
+            continue
+        if time_col is not None:
+            grp = grp.sort_values(time_col, kind="mergesort")
 
-all_paths = np.array(
-    all_paths,
-    dtype=np.float32
-)
+        values = grp[FEATURE_COLS].to_numpy(dtype=np.float32)
+        times = grp[time_col].to_numpy(dtype=np.float32) if time_col else None
+        key = tuple(str(v) for v in key)
+        flights.append(FlightSample(key, values, times))
 
-all_paths = np.ascontiguousarray(all_paths)
+    return flights
 
-# =========================
-# NORMALIZATION
-# =========================
-feature_mean = all_paths.mean(axis=(0, 1))
-feature_std = all_paths.std(axis=(0, 1))
 
-feature_std[feature_std == 0] = 1
+# =========================================================
+# Scaler
+# =========================================================
 
-all_paths = (
-    all_paths - feature_mean
-) / feature_std
+def fit_scaler(flights: List[FlightSample]) -> StandardScaler:
+    scaler = StandardScaler()
+    all_points = np.concatenate([f.values for f in flights], axis=0)
+    scaler.fit(all_points)
+    return scaler
 
-# =========================
-# TRAIN / TEST SPLIT
-# =========================
-indices = list(range(len(all_paths)))
 
-random.shuffle(indices)
+# =========================================================
+# Dataset and collate
+# =========================================================
 
-split = int(0.99 * len(indices))
+class FlightSequenceDataset(Dataset):
+    def __init__(self, flights: List[FlightSample], scaler: StandardScaler) -> None:
+        self.flights = flights
+        self.scaler = scaler
 
-train_idx = indices[:split]
-test_idx = indices[split:]
+    def __len__(self) -> int:
+        return len(self.flights)
 
-train_paths = all_paths[train_idx]
-test_paths = all_paths[test_idx]
+    def __getitem__(self, idx: int):
+        sample = self.flights[idx]
+        original = sample.values.astype(np.float32)
+        scaled = self.scaler.transform(original).astype(np.float32)
 
-test_flights = [
-    flight_refs[i]
-    for i in test_idx
-]
+        return {
+            "x": torch.tensor(scaled, dtype=torch.float32),
+            "y": torch.tensor(scaled, dtype=torch.float32),
+            "length": len(scaled),
+            "key": sample.key,
+        }
 
-# =========================
-# CREATE SLIDING WINDOWS
-# =========================
-train_inputs = []
-train_targets = []
 
-for path in train_paths:
+def collate_flights(batch):
+    lengths = torch.tensor([item["length"] for item in batch], dtype=torch.long)
+    max_len = int(lengths.max().item())
 
-    max_start = (
-        SEQ_LEN
-        - INPUT_LEN
-        - FUTURE_LEN
-    )
+    x_pad = torch.zeros(len(batch), max_len, 3, dtype=torch.float32)
+    y_pad = torch.zeros(len(batch), max_len, 3, dtype=torch.float32)
+    valid_pad = torch.zeros(len(batch), max_len, dtype=torch.bool)
+    keys = []
 
-    for start in range(
-        0,
-        max_start + 1,
-        STRIDE
-    ):
+    for i, item in enumerate(batch):
+        T = item["length"]
+        x_pad[i, :T] = item["x"]
+        y_pad[i, :T] = item["y"]
+        valid_pad[i, :T] = True
+        keys.append(item["key"])
 
-        x = path[
-            start:
-            start + INPUT_LEN
-        ]
+    return {
+        "x": x_pad,
+        "y": y_pad,
+        "valid_mask": valid_pad,
+        "lengths": lengths,
+        "keys": keys,
+    }
 
-        y = path[
-            start + INPUT_LEN:
-            start + INPUT_LEN + FUTURE_LEN
-        ]
 
-        train_inputs.append(x)
-        train_targets.append(y)
+# =========================================================
+# Model
+# =========================================================
 
-train_inputs = torch.tensor(
-    np.array(train_inputs),
-    dtype=torch.float32
-)
-
-train_targets = torch.tensor(
-    np.array(train_targets),
-    dtype=torch.float32
-)
-
-print("Training windows:", len(train_inputs))
-
-# =========================
-# DATASET
-# =========================
-class FlightDataset(Dataset):
-
-    def __init__(
-        self,
-        inputs,
-        targets
-    ):
-
-        self.inputs = inputs
-        self.targets = targets
-
-    def __len__(self):
-
-        return len(self.inputs)
-
-    def __getitem__(self, idx):
-
-        return (
-            self.inputs[idx],
-            self.targets[idx]
-        )
-
-train_dataset = FlightDataset(
-    train_inputs,
-    train_targets
-)
-
-train_loader = DataLoader(
-    train_dataset,
-    batch_size=BATCH_SIZE,
-    shuffle=True,
-    num_workers=32,
-    pin_memory=True,
-    persistent_workers=True
-)
-
-# =========================
-# MODEL
-# =========================
-class GRUPredictor(nn.Module):
-
-    def __init__(
-        self,
-        input_size=4,
-        hidden_size=128,
-        future_len=2
-    ):
-
+class FlightSequenceModel(nn.Module):
+    def __init__(self, hidden_dim: int = 128, num_layers: int = 2, dropout: float = 0.2):
         super().__init__()
-
-        self.future_len = future_len
-        self.input_size = input_size
-
         self.gru = nn.GRU(
-            input_size,
-            hidden_size,
+            input_size=3,
+            hidden_size=hidden_dim,
+            num_layers=num_layers,
             batch_first=True,
-            num_layers=1
+            bidirectional=True,
+            dropout=dropout if num_layers > 1 else 0.0,
         )
-
-        self.fc = nn.Sequential(
-
-            nn.Linear(
-                hidden_size,
-                hidden_size
-            ),
-
+        self.head = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
             nn.ReLU(),
-
-            nn.Linear(
-                hidden_size,
-                future_len * input_size
-            )
+            nn.Linear(hidden_dim, 3),
         )
 
-    def forward(self, x):
-
-        _, hidden = self.gru(x)
-
-        hidden = hidden[-1]
-
-        out = self.fc(hidden)
-
-        out = out.view(
-            -1,
-            self.future_len,
-            self.input_size
+    def forward(self, x: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
+        packed = nn.utils.rnn.pack_padded_sequence(
+            x, lengths.cpu(), batch_first=True, enforce_sorted=False
         )
+        packed_out, _ = self.gru(packed)
+        out, _ = nn.utils.rnn.pad_packed_sequence(packed_out, batch_first=True)
+        return self.head(out)
 
-        return out
 
-model = GRUPredictor(
-    input_size=4,
-    hidden_size=HIDDEN_SIZE,
-    future_len=FUTURE_LEN
-).to(DEVICE)
+# =========================================================
+# Loss / metrics
+# =========================================================
 
-model = torch.compile(model)
+def weighted_mse_loss(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    valid_mask: torch.Tensor,
+    target_weights: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """Weighted MSE with lat/lon emphasized over altitude."""
+    valid = valid_mask.unsqueeze(-1).float()
+    mse = (pred - target) ** 2
 
-criterion = nn.MSELoss()
+    if target_weights is None:
+        target_weights = torch.tensor(TARGET_WEIGHTS, device=pred.device, dtype=pred.dtype)
+    else:
+        target_weights = target_weights.to(device=pred.device, dtype=pred.dtype)
 
-optimizer = torch.optim.Adam(
-    model.parameters(),
-    lr=LR
-)
+    mse = mse * target_weights.view(1, 1, -1)
+    loss = (mse * valid).sum() / valid.sum().clamp_min(1.0)
+    return loss
 
-scaler = GradScaler()
 
-# =========================
-# TRAIN
-# =========================
-best_loss = float("inf")
+@torch.no_grad()
+def evaluate(model, loader, device):
+    model.eval()
+    total_loss = 0.0
 
-for epoch in range(EPOCHS):
+    for batch in loader:
+        x = batch["x"].to(device)
+        y = batch["y"].to(device)
+        valid_mask = batch["valid_mask"].to(device)
+        lengths = batch["lengths"].to(device)
 
-    model.train()
+        pred = model(x, lengths)
+        loss = weighted_mse_loss(pred, y, valid_mask)
+        total_loss += loss.item() * x.size(0)
 
-    total_loss = 0
+    avg_loss = total_loss / max(len(loader.dataset), 1)
+    return avg_loss
 
-    for x, y in train_loader:
 
-        x = x.to(
-            DEVICE,
-            non_blocking=True
-        )
+@torch.no_grad()
+def evaluate_in_original_units(model, loader, device, scaler: StandardScaler):
+    model.eval()
+    preds_all = []
+    targets_all = []
 
-        y = y.to(
-            DEVICE,
-            non_blocking=True
-        )
+    for batch in loader:
+        x = batch["x"].to(device)
+        y = batch["y"].to(device)
+        lengths = batch["lengths"].to(device)
 
-        optimizer.zero_grad()
+        pred = model(x, lengths)
+        preds_all.append(pred.cpu().numpy())
+        targets_all.append(y.cpu().numpy())
 
-        with autocast():
+    pred = np.concatenate(preds_all, axis=0)
+    true = np.concatenate(targets_all, axis=0)
 
-            pred = model(x)
+    n, t, c = pred.shape
+    pred_inv = scaler.inverse_transform(pred.reshape(-1, c)).reshape(n, t, c)
+    true_inv = scaler.inverse_transform(true.reshape(-1, c)).reshape(n, t, c)
 
-            loss = criterion(
-                pred,
-                y
-            )
+    diff = pred_inv - true_inv
+    rmse = math.sqrt(float((diff ** 2).mean()))
+    mae = float(np.abs(diff).mean())
+    horiz_rmse = math.sqrt(float((diff[..., :2] ** 2).mean()))
 
-        scaler.scale(loss).backward()
+    return {
+        "rmse_all": rmse,
+        "mae_all": mae,
+        "horiz_rmse": horiz_rmse,
+        "pred_inv": pred_inv,
+        "true_inv": true_inv,
+    }
 
-        scaler.step(optimizer)
 
-        scaler.update()
+# =========================================================
+# Train / predict helpers
+# =========================================================
 
-        total_loss += loss.item()
+def make_loaders(train_flights, val_flights, test_flights, scaler, batch_size: int):
+    train_ds = FlightSequenceDataset(train_flights, scaler)
+    val_ds = FlightSequenceDataset(val_flights, scaler)
+    test_ds = FlightSequenceDataset(test_flights, scaler)
 
-    avg_loss = total_loss / len(train_loader)
+    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, collate_fn=collate_flights)
+    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, collate_fn=collate_flights)
+    test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, collate_fn=collate_flights)
+    return train_loader, val_loader, test_loader
 
-    print(
-        f"Epoch {epoch+1}/{EPOCHS} "
-        f"Loss: {avg_loss:.6f}"
-    )
 
-    if avg_loss < best_loss:
+def train_model(model, train_loader, val_loader, device, epochs: int, lr: float):
+    optimiser = torch.optim.Adam(model.parameters(), lr=lr)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimiser, mode="min", factor=0.5, patience=3)
 
-        best_loss = avg_loss
+    best_val = float("inf")
+    best_state = None
+    train_hist = []
+    val_hist = []
 
-        print(
-            f"New best model saved! "
-            f"Loss: {best_loss:.6f}"
-        )
+    for epoch in range(1, epochs + 1):
+        model.train()
+        total = 0.0
 
-# =========================
-# DENORMALIZATION
-# =========================
-def unnormalize(path):
+        for batch in train_loader:
+            x = batch["x"].to(device)
+            y = batch["y"].to(device)
+            valid_mask = batch["valid_mask"].to(device)
+            lengths = batch["lengths"].to(device)
 
-    return (
-        path * feature_std
-    ) + feature_mean
+            pred = model(x, lengths)
+            loss = weighted_mse_loss(pred, y, valid_mask)
 
-def denorm(path, lat0, lon0):
+            optimiser.zero_grad(set_to_none=True)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimiser.step()
 
-    coords = []
+            total += loss.item() * x.size(0)
 
-    current_lat = lat0
-    current_lon = lon0
+        train_loss = total / max(len(train_loader.dataset), 1)
+        val_loss = evaluate(model, val_loader, device)
+        scheduler.step(val_loss)
 
-    for step in path:
+        train_hist.append(train_loss)
+        val_hist.append(val_loss)
 
-        current_lat += step[0]
-        current_lon += step[1]
+        if val_loss < best_val:
+            best_val = val_loss
+            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
 
-        coords.append([
-            current_lat,
-            current_lon
-        ])
+        print(f"epoch {epoch:>3}/{epochs}  train={train_loss:.6f}  val={val_loss:.6f}")
 
-    return np.array(coords)
+    if best_state is not None:
+        model.load_state_dict(best_state)
 
-# =========================
-# PREDICT TEST FLIGHTS
-# =========================
-model.eval()
+    print(f"[train] Best val loss: {best_val:.6f}")
+    return model, train_hist, val_hist
 
-kml = simplekml.Kml()
 
-for idx, (sample, flight) in enumerate(
-    zip(test_paths, test_flights)
+@torch.no_grad()
+def predict_flight(model, scaler, sample: FlightSample, device):
+    original = sample.values.astype(np.float32)
+    scaled = scaler.transform(original).astype(np.float32)
+
+    x = torch.tensor(scaled[None], dtype=torch.float32, device=device)
+    lengths = torch.tensor([len(scaled)], dtype=torch.long, device=device)
+
+    pred = model(x, lengths).cpu().numpy()[0]
+    pred_inv = scaler.inverse_transform(pred)
+    return original, pred_inv
+
+
+# =========================================================
+# Main
+# =========================================================
+
+def run(
+    csv_path: str,
+    epochs: int = 25,
+    batch_size: int = 32,
+    hidden_dim: int = 128,
+    lr: float = 1e-3,
+    seed: int = 42,
+    save_path: str = "adsb_sequence_model.pt",
+    load_path: Optional[str] = None,
+    plot_path: Optional[str] = "sequence_example.png",
 ):
+    seed_everything(seed)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"DEVICE: {device}")
 
-    print(
-        f"Predicting "
-        f"{idx+1}/{len(test_paths)}"
+    df = load_adsb_csv(csv_path)
+    train_df, val_df, test_df = split_flights(df, seed=seed)
+
+    train_flights = group_flights(train_df)
+    val_flights = group_flights(val_df)
+    test_flights = group_flights(test_df)
+
+    print(f"[data] Train flights kept: {len(train_flights)}")
+    print(f"[data] Val flights kept:   {len(val_flights)}")
+    print(f"[data] Test flights kept:  {len(test_flights)}")
+
+    scaler = fit_scaler(train_flights)
+    train_loader, val_loader, test_loader = make_loaders(
+        train_flights, val_flights, test_flights, scaler, batch_size
     )
 
-    lat0 = flight[0][1]
-    lon0 = flight[0][2]
+    model = FlightSequenceModel(hidden_dim=hidden_dim).to(device)
 
-    # =========================
-    # UNNORMALIZE REAL PATH
-    # =========================
-    real_full = unnormalize(sample)
-
-    # =========================
-    # INITIAL INPUT
-    # =========================
-    current_window = sample[:INPUT_LEN].copy()
-
-    # Keep COMPLETE trajectory
-    reconstructed = list(
-        real_full[:INPUT_LEN]
-    )
-
-    total_future = (
-        SEQ_LEN - INPUT_LEN
-    )
-
-    steps_needed = int(np.ceil(
-        total_future / FUTURE_LEN
-    ))
-
-    # =========================
-    # AUTOREGRESSIVE LOOP
-    # =========================
-    for _ in range(steps_needed):
-
-        x_tensor = torch.tensor(
-            current_window,
-            dtype=torch.float32
-        ).unsqueeze(0).to(DEVICE)
-
-        with torch.no_grad():
-
-            with autocast():
-
-                pred = model(x_tensor)
-
-        pred = (
-            pred.squeeze(0)
-            .cpu()
-            .numpy()
+    if load_path and os.path.exists(load_path):
+        checkpoint = torch.load(load_path, map_location=device)
+        model.load_state_dict(checkpoint["model_state"])
+        scaler.mean_ = checkpoint["scaler_mean"]
+        scaler.scale_ = checkpoint["scaler_scale"]
+        scaler.var_ = checkpoint["scaler_var"]
+        scaler.n_features_in_ = 3
+        print(f"[load] Loaded checkpoint from '{load_path}'")
+    else:
+        model, train_hist, val_hist = train_model(model, train_loader, val_loader, device, epochs, lr)
+        torch.save(
+            {
+                "model_state": model.state_dict(),
+                "scaler_mean": scaler.mean_,
+                "scaler_scale": scaler.scale_,
+                "scaler_var": scaler.var_,
+                "seed": seed,
+                "hidden_dim": hidden_dim,
+            },
+            save_path,
         )
+        print(f"[save] Saved checkpoint to '{save_path}'")
 
-        # =========================
-        # UNNORMALIZE PREDICTION
-        # =========================
-        pred_un = unnormalize(pred)
+    test_stats = evaluate_in_original_units(model, test_loader, device, scaler)
+    print(
+        "[eval] "
+        f"HorizRMSE={test_stats['horiz_rmse']:.3f}  "
+        f"RMSE={test_stats['rmse_all']:.3f}  "
+        f"MAE={test_stats['mae_all']:.3f}"
+    )
+    print("[note] This version trains on continuous paths with no synthetic gaps.")
 
-        # Save prediction
-        reconstructed.extend(pred_un)
+    if plot_path and len(test_flights) > 0:
+        import matplotlib.pyplot as plt
 
-        # =========================
-        # FEEDBACK INTO MODEL
-        # =========================
-        pred_norm = (
-            pred_un - feature_mean
-        ) / feature_std
+        sample = random.choice(test_flights)
+        original, predicted = predict_flight(model, scaler, sample, device)
 
-        current_window = np.concatenate([
-            current_window[FUTURE_LEN:],
-            pred_norm
-        ])
+        fig, axes = plt.subplots(3, 1, figsize=(14, 11), sharex=True)
+        titles = ["Latitude", "Longitude", "Altitude"]
+        for i, ax in enumerate(axes):
+            ax.plot(original[:, i], label="true")
+            ax.plot(predicted[:, i], label="predicted", linestyle="--")
+            ax.set_title(titles[i])
+            ax.grid(alpha=0.3)
+        axes[0].legend()
+        axes[-1].set_xlabel("time step")
+        fig.suptitle("Continuous flight path example")
+        fig.tight_layout()
+        fig.savefig(plot_path, dpi=160, bbox_inches="tight")
+        print(f"[plot] Saved → '{plot_path}'")
 
-    # =========================
-    # FINAL TRAJECTORY
-    # =========================
-    reconstructed = np.array(
-        reconstructed[:SEQ_LEN]
+    return model, scaler, test_stats
+
+
+# =========================================================
+# CLI
+# =========================================================
+
+def main():
+    parser = argparse.ArgumentParser(description="Simple ADS-B continuous-path model")
+    parser.add_argument("--csv", type=str, default="trajectory.csv", help="Path to ADS-B CSV")
+    parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--batch-size", type=int, default=4096)
+    parser.add_argument("--hidden-dim", type=int, default=128)
+    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--save-path", type=str, default="adsb_sequence_model.pt")
+    parser.add_argument("--load-path", type=str, default=None)
+    parser.add_argument("--plot-path", type=str, default="sequence_example.png")
+    args = parser.parse_args()
+
+    run(
+        csv_path=args.csv,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        hidden_dim=args.hidden_dim,
+        lr=args.lr,
+        seed=args.seed,
+        save_path=args.save_path,
+        load_path=args.load_path,
+        plot_path=args.plot_path,
     )
 
-    # =========================
-    # CONVERT DELTAS -> GPS
-    # =========================
-    real_coords = denorm(
-        real_full[:, :2],
-        lat0,
-        lon0
-    )
 
-    pred_coords = denorm(
-        reconstructed[:, :2],
-        lat0,
-        lon0
-    )
-
-    input_coords = denorm(
-        real_full[:INPUT_LEN, :2],
-        lat0,
-        lon0
-    )
-
-    # =========================
-    # KML
-    # =========================
-
-    # INPUT
-    partial_line = kml.newlinestring(
-        name=f"Input {idx}",
-        coords=[
-            (p[1], p[0])
-            for p in input_coords
-        ]
-    )
-
-    partial_line.style.linestyle.color = (
-        simplekml.Color.blue
-    )
-
-    partial_line.style.linestyle.width = 4
-
-    # REAL
-    real_line = kml.newlinestring(
-        name=f"Real {idx}",
-        coords=[
-            (p[1], p[0])
-            for p in real_coords
-        ]
-    )
-
-    real_line.style.linestyle.color = (
-        simplekml.Color.green
-    )
-
-    real_line.style.linestyle.width = 4
-
-    # PREDICTED
-    pred_line = kml.newlinestring(
-        name=f"Predicted {idx}",
-        coords=[
-            (p[1], p[0])
-            for p in pred_coords
-        ]
-    )
-
-    pred_line.style.linestyle.color = (
-        simplekml.Color.red
-    )
-
-    pred_line.style.linestyle.width = 4
-
-# =========================
-# SAVE
-# =========================
-kml.save("prediction.kml")
-
-print("Saved prediction.kml")
-
-# Force clean exit
-import os
-os._exit(0)
+if __name__ == "__main__":
+    main()

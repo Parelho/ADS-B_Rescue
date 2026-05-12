@@ -4,3 +4,5 @@ output.txt
 *.kml
 .env
 *.pth
+*.pt
+*.png

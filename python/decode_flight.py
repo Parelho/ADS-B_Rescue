@@ -3,7 +3,7 @@ import re
 import sys
 csv.field_size_limit(sys.maxsize)
 
-file_path = "output.csv"
+file_path = "output_old_knn.csv"
 
 rows = []
 
@@ -11,7 +11,8 @@ with open(file_path, newline='') as f:
     reader = csv.DictReader(f)
 
     for row in reader:
-        rows.append(row)
+        if row["estdepartureairport"] == "KMMU":
+            rows.append(row)
 
 track_pattern = re.compile(
     r'time=([0-9]+), latitude=([\-0-9.]+), longitude=([\-0-9.]+), altitude=([\-0-9.]+).*?heading=([\-0-9.]+)'
