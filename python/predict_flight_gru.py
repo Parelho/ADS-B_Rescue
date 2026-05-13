@@ -81,8 +81,8 @@ def load_adsb_csv(csv_path: str) -> pd.DataFrame:
 
 def split_flights(
     df: pd.DataFrame,
-    val_ratio: float = 0.15,
-    test_ratio: float = 0.15,
+    val_ratio: float = 0.14,
+    test_ratio: float = 0.01,
     seed: int = 42,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     flight_keys = df.groupby(KEY_COLS, sort=False).size().index.tolist()
@@ -198,7 +198,7 @@ def collate_flights(batch):
 # =========================================================
 
 class FlightSequenceModel(nn.Module):
-    def __init__(self, hidden_dim: int = 128, num_layers: int = 2, dropout: float = 0.2):
+    def __init__(self, hidden_dim: int = 128, num_layers: int = 3, dropout: float = 0.2):
         super().__init__()
         self.gru = nn.GRU(
             input_size=3,
