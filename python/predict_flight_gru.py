@@ -293,6 +293,38 @@ def evaluate_in_original_units(model, loader, device, scaler: StandardScaler):
     mae = float(np.abs(diff).mean())
     horiz_rmse = math.sqrt(float((diff[..., :2] ** 2).mean()))
 
+    lat_diff = diff[..., 0]
+    lon_diff = diff[..., 1]
+    alt_diff = diff[..., 2]
+
+    metrics_df = pd.DataFrame([
+        {
+            "variable": "latitude",
+            "unit": "degrees",
+            "rmse": math.sqrt(float((lat_diff ** 2).mean())),
+            "mae": float(np.abs(lat_diff).mean()),
+            "mse": float((lat_diff ** 2).mean()),
+        },
+        {
+            "variable": "longitude",
+            "unit": "degrees",
+            "rmse": math.sqrt(float((lon_diff ** 2).mean())),
+            "mae": float(np.abs(lon_diff).mean()),
+            "mse": float((lon_diff ** 2).mean()),
+        },
+        {
+            "variable": "altitude",
+            "unit": "meters",
+            "rmse": math.sqrt(float((alt_diff ** 2).mean())),
+            "mae": float(np.abs(alt_diff).mean()),
+            "mse": float((alt_diff ** 2).mean()),
+        },
+    ])
+
+    metrics_df.to_csv("metrics_per_dimension.csv", index=False)
+
+    print("\n[metrics] Saved per-dimension metrics to 'metrics_per_dimension.csv'")
+
     return {
         "rmse_all": rmse,
         "mae_all": mae,
@@ -462,10 +494,15 @@ def run(
             ax.set_title(titles[i])
             ax.grid(alpha=0.3)
         axes[0].legend()
-        axes[-1].set_xlabel("time step")
-        fig.suptitle("Continuous flight path example")
+        axes[0].set_xlabel("step")
+        axes[0].set_ylabel("degrees")
+        axes[1].set_xlabel("step")
+        axes[1].set_ylabel("degrees")
+        axes[2].set_xlabel("step")
+        axes[2].set_ylabel("meters")
+        fig.suptitle("Trajectory Reconstruction with GRU")
         fig.tight_layout()
-        fig.savefig(plot_path, dpi=160, bbox_inches="tight")
+        fig.savefig(plot_path, dpi=320, bbox_inches="tight")
         print(f"[plot] Saved → '{plot_path}'")
 
     return model, scaler, test_stats
