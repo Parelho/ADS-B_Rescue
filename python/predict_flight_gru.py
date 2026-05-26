@@ -4,6 +4,8 @@ import random
 import argparse
 from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple
+import simplekml
+import matplotlib.pyplot as plt
 
 import numpy as np
 import pandas as pd
@@ -81,7 +83,7 @@ def load_adsb_csv(csv_path: str) -> pd.DataFrame:
 
 def split_flights(
     df: pd.DataFrame,
-    val_ratio: float = 0.14,
+    val_ratio: float = 0.29,
     test_ratio: float = 0.01,
     seed: int = 42,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -333,6 +335,245 @@ def evaluate_in_original_units(model, loader, device, scaler: StandardScaler):
         "true_inv": true_inv,
     }
 
+def generate_kml_for_test_flights(
+    model,
+    scaler,
+    test_flights,
+    device,
+    output_path="test_flights_predictions.kml",
+):
+
+    SEARCH_RADIUS = 0.08
+    CIRCLE_POINTS = 72
+
+    def coords_to_kml(coords):
+        return " ".join(
+            f"{lon},{lat},{alt}"
+            for lon, lat, alt in coords
+        )
+
+    def make_circle(lat, lon, radius_deg, points=72):
+
+        circle_coords = []
+
+        for i in range(points + 1):
+
+            angle = 2 * math.pi * i / points
+
+            dlat = radius_deg * math.sin(angle)
+
+            dlon = (
+                radius_deg * math.cos(angle)
+                / max(math.cos(math.radians(lat)), 1e-6)
+            )
+
+            circle_coords.append(
+                (
+                    lon + dlon,
+                    lat + dlat,
+                    0,
+                )
+            )
+
+        return circle_coords
+
+    kml_content = """<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+<Document>
+
+<Style id="trueStyle">
+    <LineStyle>
+        <color>ff25a025</color>
+        <width>4</width>
+    </LineStyle>
+</Style>
+
+<Style id="predStyle">
+    <LineStyle>
+        <color>ff0000ff</color>
+        <width>4</width>
+    </LineStyle>
+</Style>
+
+<Style id="predFinalStyle">
+    <LineStyle>
+        <color>ff800000</color>
+        <width>4</width>
+    </LineStyle>
+</Style>
+
+<Style id="circleStyle">
+    <LineStyle>
+        <color>aa0000ff</color>
+        <width>3</width>
+    </LineStyle>
+
+    <PolyStyle>
+        <color>330000ff</color>
+    </PolyStyle>
+</Style>
+"""
+
+    for idx, sample in enumerate(test_flights):
+
+        original, predicted = predict_flight(
+            model,
+            scaler,
+            sample,
+            device,
+        )
+
+        flight_name = (
+            f"{sample.key[1]}_to_"
+            f"{sample.key[2]}_"
+            f"{sample.key[0]}"
+        )
+
+        # =====================================================
+        # TRUE TRAJECTORY
+        # =====================================================
+
+        true_coords = []
+
+        for lat, lon, alt in original:
+
+            if np.isnan(lat) or np.isnan(lon):
+                continue
+
+            true_coords.append(
+                (
+                    float(lon),
+                    float(lat),
+                    float(alt),
+                )
+            )
+
+        # =====================================================
+        # FIX PREDICTION LENGTH
+        # =====================================================
+
+        true_len = len(original)
+
+        predicted = predicted[:true_len]
+
+        # =====================================================
+        # SHOW ONLY FIRST HALF OF PREDICTION
+        # =====================================================
+
+        pred_half_idx = max(2, true_len // 2)
+
+        visible_pred = predicted[:pred_half_idx]
+
+        pred_coords = []
+
+        for lat, lon, alt in visible_pred:
+
+            if np.isnan(lat) or np.isnan(lon):
+                continue
+
+            pred_coords.append(
+                (
+                    float(lon),
+                    float(lat),
+                    float(alt),
+                )
+            )
+
+        # Skip invalid trajectories
+        if len(pred_coords) < 2:
+            continue
+
+        # =====================================================
+        # SEARCH CIRCLE
+        # =====================================================
+
+        end_lat = float(visible_pred[-19][0])
+        end_lon = float(visible_pred[-19][1])
+        pred_coords_final = pred_coords[-18:]
+        pred_coords_final = pred_coords_final[:12]
+        pred_coords = pred_coords[:-18]
+
+        circle_coords = make_circle(
+            end_lat,
+            end_lon,
+            SEARCH_RADIUS,
+            CIRCLE_POINTS,
+        )
+
+        # =====================================================
+        # BUILD KML
+        # =====================================================
+
+        kml_content += f"""
+<Folder>
+    <name>{flight_name}</name>
+
+    <Placemark>
+        <name>{flight_name}_TRUE</name>
+        <styleUrl>#trueStyle</styleUrl>
+
+        <LineString>
+            <altitudeMode>absolute</altitudeMode>
+            <coordinates>
+                {coords_to_kml(true_coords)}
+            </coordinates>
+        </LineString>
+    </Placemark>
+
+    <Placemark>
+        <name>{flight_name}_PRED</name>
+        <styleUrl>#predStyle</styleUrl>
+
+        <LineString>
+            <altitudeMode>absolute</altitudeMode>
+            <coordinates>
+                {coords_to_kml(pred_coords)}
+            </coordinates>
+        </LineString>
+    </Placemark>
+
+    <Placemark>
+        <name>{flight_name}_PRED_FINAL</name>
+        <styleUrl>#predFinalStyle</styleUrl>
+
+        <LineString>
+            <altitudeMode>absolute</altitudeMode>
+            <coordinates>
+                {coords_to_kml(pred_coords_final)}
+            </coordinates>
+        </LineString>
+    </Placemark>
+
+    <Placemark>
+        <name>{flight_name}_SEARCH_AREA</name>
+        <styleUrl>#circleStyle</styleUrl>
+
+        <Polygon>
+            <outerBoundaryIs>
+                <LinearRing>
+                    <coordinates>
+                        {coords_to_kml(circle_coords)}
+                    </coordinates>
+                </LinearRing>
+            </outerBoundaryIs>
+        </Polygon>
+    </Placemark>
+
+</Folder>
+"""
+
+        if (idx + 1) % 100 == 0:
+            print(f"[kml] {idx + 1}/{len(test_flights)} flights")
+
+    kml_content += """
+</Document>
+</kml>
+"""
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(kml_content)
+
+    print(f"[kml] Saved '{output_path}'")
 
 # =========================================================
 # Train / predict helpers
@@ -480,30 +721,113 @@ def run(
     )
     print("[note] This version trains on continuous paths with no synthetic gaps.")
 
-    if plot_path and len(test_flights) > 0:
-        import matplotlib.pyplot as plt
+    if len(test_flights) > 0:
+        plots_dir = "test_flight_plots"
+        os.makedirs(plots_dir, exist_ok=True)
 
-        sample = random.choice(test_flights)
-        original, predicted = predict_flight(model, scaler, sample, device)
+        for idx, sample in enumerate(test_flights):
 
-        fig, axes = plt.subplots(3, 1, figsize=(14, 11), sharex=True)
-        titles = ["Latitude", "Longitude", "Altitude"]
-        for i, ax in enumerate(axes):
-            ax.plot(original[:, i], label="true")
-            ax.plot(predicted[:, i], label="predicted", linestyle="--")
-            ax.set_title(titles[i])
-            ax.grid(alpha=0.3)
-        axes[0].legend()
-        axes[0].set_xlabel("step")
-        axes[0].set_ylabel("degrees")
-        axes[1].set_xlabel("step")
-        axes[1].set_ylabel("degrees")
-        axes[2].set_xlabel("step")
-        axes[2].set_ylabel("meters")
-        fig.suptitle("Trajectory Reconstruction with GRU")
-        fig.tight_layout()
-        fig.savefig(plot_path, dpi=320, bbox_inches="tight")
-        print(f"[plot] Saved → '{plot_path}'")
+            original, predicted = predict_flight(
+                model,
+                scaler,
+                sample,
+                device,
+            )
+
+            flight_name = (
+                f"{sample.key[1]}_to_"
+                f"{sample.key[2]}_"
+                f"{sample.key[0]}"
+            )
+
+            # ============================================
+            # CREATE FIGURE
+            # ============================================
+
+            fig, axes = plt.subplots(
+                3,
+                1,
+                figsize=(14, 11),
+                sharex=True,
+            )
+
+            titles = [
+                "Latitude",
+                "Longitude",
+                "Altitude",
+            ]
+
+            ylabels = [
+                "degrees",
+                "degrees",
+                "meters",
+            ]
+
+            for i, ax in enumerate(axes):
+
+                ax.plot(
+                    original[:, i],
+                    label="true",
+                )
+
+                ax.plot(
+                    predicted[:, i],
+                    label="predicted",
+                    linestyle="--",
+                )
+
+                ax.set_title(titles[i])
+
+                ax.set_ylabel(ylabels[i])
+
+                ax.grid(alpha=0.3)
+
+            axes[0].legend()
+
+            axes[2].set_xlabel("step")
+
+            fig.suptitle(
+                f"Trajectory Reconstruction\n{flight_name}"
+            )
+
+            fig.tight_layout()
+
+            # ============================================
+            # SAVE FIGURE
+            # ============================================
+
+            output_file = os.path.join(
+                plots_dir,
+                f"{flight_name}.png",
+            )
+
+            fig.savefig(
+                output_file,
+                dpi=320,
+                bbox_inches="tight",
+            )
+
+            plt.close(fig)
+
+            if (idx + 1) % 100 == 0:
+                print(
+                    f"[plot] "
+                    f"{idx + 1}/{len(test_flights)} plots saved"
+                )
+
+    print(
+        f"[plot] Saved all plots to '{plots_dir}'"
+    )
+
+    generate_kml_for_test_flights(
+        model=model,
+        scaler=scaler,
+        test_flights=test_flights,
+        device=device,
+        output_path="test_flights_predictions.kml",
+    )
+
+    print("[done] Finished.")
 
     return model, scaler, test_stats
 
