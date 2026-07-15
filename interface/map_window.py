@@ -1,5 +1,6 @@
 import io
 import html
+import json
 
 import folium
 from folium import Element
@@ -15,8 +16,7 @@ from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebChannel import QWebChannel
 
 from bridge import Bridge
-from opensky import get_planes
-
+from planes import get_lista
 
 class MapWindow(QMainWindow):
 
@@ -81,18 +81,28 @@ class MapWindow(QMainWindow):
             tiles="CartoDB positron"
         )
 
-        planes = get_planes()
+        planes = get_lista()
 
         for p in planes:
             folium.Marker(
-                location=[p["lat"], p["lon"]],
-                tooltip=p["callsign"],
+                location=[p["trajectory"][0]["lat"], p["trajectory"][0]["lon"]],
+                tooltip=p["icao"],
                 icon=folium.Icon(
                     color="red",
                     icon="plane",
                     prefix="fa"
                 ),
             ).add_to(m)
+
+        plane_data = [
+            {
+                "callsign": plane["callsign"],
+                "lat": plane["trajectory"][0]["lat"],
+                "lon": plane["trajectory"][0]["lon"],
+                "route_points": [[point["lat"], point["lon"]] for point in plane.get("trajectory", [])],
+            }
+            for plane in planes
+        ]
 
         channel_js = """
         <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
@@ -107,8 +117,31 @@ class MapWindow(QMainWindow):
 
         click_js = """
         <script>
-        let brasiliaPoint = [-15.7942, -47.8822];
+        let planeData = """ + json.dumps(plane_data) + """;
         let currentLine = null;
+
+        function normalizeText(value) {
+            return String(value || "")
+                .replace(/<[^>]*>/g, "")
+                .replace(/&nbsp;/g, " ")
+                .trim();
+        }
+
+        function findPlaneMatch(tooltip, latlng) {
+            const normalizedTooltip = normalizeText(tooltip);
+
+            const byCallsign = planeData.find(function(item) {
+                return normalizeText(item.callsign) === normalizedTooltip;
+            });
+
+            if (byCallsign) {
+                return byCallsign;
+            }
+
+            return planeData.find(function(item) {
+                return Math.abs(item.lat - latlng.lat) < 0.0001 && Math.abs(item.lon - latlng.lng) < 0.0001;
+            }) || null;
+        }
 
         function attachClicks(){
 
@@ -125,20 +158,23 @@ class MapWindow(QMainWindow):
                             let p = e.target;
                             let map = p._map;
                             let latlng = p.getLatLng();
+                            let tooltip = p.getTooltip() ? p.getTooltip().getContent() : "N/A";
+                            let matchedPlane = findPlaneMatch(tooltip, latlng);
+                            let routePoints = matchedPlane ? matchedPlane.route_points : [];
 
                             if (map) {
                                 if (currentLine) {
                                     map.removeLayer(currentLine);
                                 }
 
-                                currentLine = L.polyline([
-                                    brasiliaPoint,
-                                    [latlng.lat, latlng.lng]
-                                ], {
-                                    color: 'blue',
-                                    weight: 2,
-                                    opacity: 0.8
-                                }).addTo(map);
+                                currentLine = L.polyline(
+                                    routePoints.concat([[latlng.lat, latlng.lng]]),
+                                    {
+                                        color: 'blue',
+                                        weight: 2,
+                                        opacity: 0.8
+                                    }
+                                ).addTo(map);
 
                                 if (map.getZoom() !== 6) {
                                     map.setView([latlng.lat, latlng.lng], map.getZoom(), {animate: true, duration: 0.7});
@@ -148,9 +184,7 @@ class MapWindow(QMainWindow):
                             }
 
                             window.bridge.onPlaneClicked(
-                                p.getTooltip() ?
-                                p.getTooltip().getContent() :
-                                "N/A",
+                                tooltip,
 
                                 "Desconhecido",
 

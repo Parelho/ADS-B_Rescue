@@ -1,8 +1,7 @@
 import io
 import folium
 from folium import Element
-from opensky import get_planes
-
+from planes import get_lista
 
 def build_map_html():
     m = folium.Map(
@@ -11,17 +10,17 @@ def build_map_html():
         tiles="CartoDB positron"
     )
 
-    planes = get_planes()
+    planes = get_lista()
 
     for p in planes:
         folium.Marker(
-            location=[p["lat"], p["lon"]],
-            tooltip=p["callsign"],
+            location=[p["trajectory"][0]["lat"], p["trajectory"][0]["lon"]],
+            tooltip=p["icao"],
             popup=(
-                f"<b>{p['callsign']}</b><br/>"
-                f"País: {p['country']}<br/>"
-                f"Lat: {p['lat']:.4f}<br/>"
-                f"Lon: {p['lon']:.4f}"
+                f"<b>{p['icao']}</b><br/>"
+                f"Callsign: {p['callsign']}<br/>"
+                f"Lat: {p['trajectory'][0]['lat']:.4f}<br/>"
+                f"Lon: {p['trajectory'][0]['lon']:.4f}"
             ),
             icon=folium.Icon(color="red", icon="plane", prefix="fa")
         ).add_to(m)
@@ -71,7 +70,7 @@ def build_map_html():
 
 def build_folium_map(planes=None):
     if planes is None:
-        planes = get_planes()
+        planes = get_lista()
 
     m = folium.Map(
         location=[-14.235, -51.925],
@@ -109,7 +108,7 @@ def run_streamlit_app():
     st.set_page_config(page_title="Aviões em tempo real", layout="wide")
     st.title("Aviões em tempo real (OpenSky)")
 
-    planes = get_planes()
+    planes = get_lista()
 
     if not planes:
         st.warning("Nenhum avião encontrado no momento.")
