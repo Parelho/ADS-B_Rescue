@@ -1,13 +1,66 @@
 import io
+from datetime import datetime, timezone
+from math import atan2, cos, degrees, radians, sin
+
 import folium
 from folium import Element
 from planes import get_lista
+
+
+def _get_heading(trajectory):
+    if not trajectory or len(trajectory) < 2:
+        return 0
+
+    try:
+        current = trajectory[0]
+        next_point = trajectory[1]
+        lat1 = radians(float(current["lat"]))
+        lon1 = radians(float(current["lon"]))
+        lat2 = radians(float(next_point["lat"]))
+        lon2 = radians(float(next_point["lon"]))
+    except (KeyError, TypeError, ValueError, IndexError):
+        return 0
+
+    delta_lon = lon2 - lon1
+    y = sin(delta_lon) * cos(lat2)
+    x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(delta_lon)
+    bearing = degrees(atan2(y, x))
+    return (bearing + 360) % 360
+
+
+def _build_plane_icon(heading):
+    return folium.DivIcon(
+        html=(
+            f'<div style="font-size:36px; color:#dc2626; '
+            f'display:inline-block; transform:rotate({heading}deg);">✈</div>'
+        ),
+        icon_size=(36, 36),
+        icon_anchor=(18, 18),
+    )
+
+
+def format_timestamp(value):
+    if value in (None, "", "N/A"):
+        return "N/A"
+
+    try:
+        timestamp = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+
+    if timestamp > 1e12:
+        timestamp = timestamp / 1000.0
+
+    try:
+        return datetime.fromtimestamp(timestamp, tz=timezone.utc).strftime("%d/%m/%Y %H:%M:%S UTC")
+    except (OverflowError, OSError, ValueError):
+        return str(value)
 
 def build_map_html():
     m = folium.Map(
         location=[-14.235, -51.925],
         zoom_start=4,
-        tiles="CartoDB positron"
+        tiles="Esri.WorldTopoMap"
     )
 
     planes = get_lista()
@@ -75,10 +128,12 @@ def build_folium_map(planes=None):
     m = folium.Map(
         location=[-14.235, -51.925],
         zoom_start=4,
-        tiles="CartoDB positron"
+        tiles="Esri.WorldTopoMap"
     )
 
     for plane in planes:
+        trajectory = plane.get("trajectory", []) or []
+        heading = _get_heading(trajectory)
         popup_html = (
             f"<b>{plane['callsign']}</b><br/>"
             f"País: {plane['country']}<br/>"
@@ -89,7 +144,7 @@ def build_folium_map(planes=None):
             location=[plane["lat"], plane["lon"]],
             tooltip=plane["callsign"],
             popup=popup_html,
-            icon=folium.Icon(color="red", icon="plane", prefix="fa")
+            icon=_build_plane_icon(heading)
         ).add_to(m)
 
     return m
@@ -127,6 +182,7 @@ def run_streamlit_app():
             st.write(f"País: {selected_plane['country']}")
             st.write(f"Latitude: {selected_plane['lat']:.4f}")
             st.write(f"Longitude: {selected_plane['lon']:.4f}")
+            st.write(f"Hora: {format_timestamp(selected_plane.get('hora'))}")
         else:
             st.info("Clique em um marcador para ver os detalhes.")
 

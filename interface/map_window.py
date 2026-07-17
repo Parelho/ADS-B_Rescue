@@ -1,6 +1,8 @@
 import io
 import html
 import json
+from datetime import datetime, timezone
+from math import atan2, cos, degrees, radians, sin
 
 import folium
 from folium import Element
@@ -17,6 +19,39 @@ from PyQt6.QtWebChannel import QWebChannel
 
 from bridge import Bridge
 from planes import get_lista
+
+
+def _get_heading(trajectory):
+    if not trajectory or len(trajectory) < 2:
+        return 0
+
+    try:
+        current = trajectory[0]
+        next_point = trajectory[1]
+        lat1 = radians(float(current["lat"]))
+        lon1 = radians(float(current["lon"]))
+        lat2 = radians(float(next_point["lat"]))
+        lon2 = radians(float(next_point["lon"]))
+    except (KeyError, TypeError, ValueError, IndexError):
+        return 0
+
+    delta_lon = lon2 - lon1
+    y = sin(delta_lon) * cos(lat2)
+    x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(delta_lon)
+    bearing = degrees(atan2(y, x))
+    return (bearing + 360) % 360
+
+
+def _build_plane_icon(heading):
+    return folium.DivIcon(
+        html=(
+            f'<div style="font-size:36px; color:#dc2626; '
+            f'display:inline-block; transform:rotate({heading}deg);">✈</div>'
+        ),
+        icon_size=(36, 36),
+        icon_anchor=(18, 18),
+    )
+
 
 class MapWindow(QMainWindow):
 
@@ -62,14 +97,34 @@ class MapWindow(QMainWindow):
 
         self.update_map()
 
-    def update_panel(self, callsign, lat, lon):
+    @staticmethod
+    def _format_timestamp(value):
+        if value in (None, "", "N/A"):
+            return "N/A"
+
+        try:
+            timestamp = float(value)
+        except (TypeError, ValueError):
+            return str(value)
+
+        if timestamp > 1e12:
+            timestamp = timestamp / 1000.0
+
+        try:
+            return datetime.fromtimestamp(timestamp, tz=timezone.utc).strftime("%d/%m/%Y %H:%M:%S UTC")
+        except (OverflowError, OSError, ValueError):
+            return str(value)
+
+    def update_panel(self, callsign, lat, lon, time):
         safe_callsign = html.unescape(callsign).replace('<div>', '').replace('</div>', '')
+        safe_time = html.escape(self._format_timestamp(time))
         self.info_panel.setHtml(
             f"<div style='font-size:14pt; font-weight:bold; margin-bottom:8px;'>{safe_callsign}</div>"
             f"<hr style='border:none; border-top:1px solid #d1d5db; margin:0 0 12px 0;'/>"
             f"<div style='font-size:11pt; line-height:1.5;'>"
             f"<b>Latitude:</b> {lat}<br/>"
-            f"<b>Longitude:</b> {lon}"
+            f"<b>Longitude:</b> {lon}<br/>"
+            f"<b>Data e hora:</b> {safe_time}"
             f"</div>"
         )
 
@@ -78,20 +133,18 @@ class MapWindow(QMainWindow):
         m = folium.Map(
             location=[-14.235, -51.925],
             zoom_start=4,
-            tiles="CartoDB positron"
+            tiles="Esri.WorldTopoMap"
         )
 
         planes = get_lista()
 
         for p in planes:
+            trajectory = p.get("trajectory", []) or []
+            heading = _get_heading(trajectory)
             folium.Marker(
-                location=[p["trajectory"][0]["lat"], p["trajectory"][0]["lon"]],
+                location=[trajectory[0]["lat"], trajectory[0]["lon"]],
                 tooltip=p["icao"],
-                icon=folium.Icon(
-                    color="red",
-                    icon="plane",
-                    prefix="fa"
-                ),
+                icon=_build_plane_icon(heading),
             ).add_to(m)
 
         plane_data = [
@@ -99,6 +152,7 @@ class MapWindow(QMainWindow):
                 "callsign": plane["callsign"],
                 "lat": plane["trajectory"][0]["lat"],
                 "lon": plane["trajectory"][0]["lon"],
+                "time": plane["trajectory"][0]["timestamp"],
                 "route_points": [[point["lat"], point["lon"]] for point in plane.get("trajectory", [])],
             }
             for plane in planes
@@ -171,7 +225,7 @@ class MapWindow(QMainWindow):
                                     routePoints.concat([[latlng.lat, latlng.lng]]),
                                     {
                                         color: 'blue',
-                                        weight: 2,
+                                        weight: 5,
                                         opacity: 0.8
                                     }
                                 ).addTo(map);
@@ -189,7 +243,8 @@ class MapWindow(QMainWindow):
                                 "Desconhecido",
 
                                 latlng.lat,
-                                latlng.lng
+                                latlng.lng,
+                                matchedPlane && matchedPlane.time !== undefined ? matchedPlane.time : "N/A"
                             );
 
                         });

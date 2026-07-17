@@ -8,4 +8,4 @@ output.txt
 *.png
 test_flight_plots
 interface/resposta.json
-interface/pycache
+interface/__pycache__
