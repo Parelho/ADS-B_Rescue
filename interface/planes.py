@@ -13,7 +13,7 @@ def _get_fallback_data_path() -> Path:
     if configured_path:
         return Path(configured_path).expanduser()
 
-    return Path(__file__).resolve().with_name("resposta.json")
+    return Path(__file__).resolve().with_name("response.json")
 
 
 def _load_fallback_planes():
@@ -30,8 +30,9 @@ def _load_fallback_planes():
 
     return payload if isinstance(payload, list) else []
 
-
 def get_lista():
+    # print("Supabase error")
+    # return _load_fallback_planes()
     api_url = os.getenv("SUPABASE_URL")
     if not api_url:
         return _load_fallback_planes()

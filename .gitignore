@@ -7,5 +7,5 @@ output.txt
 *.pt
 *.png
 test_flight_plots
-interface/resposta.json
+interface/response.json
 interface/__pycache__

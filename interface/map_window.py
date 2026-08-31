@@ -1,6 +1,7 @@
 import io
 import html
 import json
+import pandas as pd
 from datetime import datetime, timezone
 from math import atan2, cos, degrees, radians, sin
 
@@ -12,6 +13,8 @@ from PyQt6.QtWidgets import (
     QWidget,
     QTextEdit,
     QHBoxLayout,
+    QVBoxLayout,
+    QPushButton,
 )
 
 from PyQt6.QtWebEngineWidgets import QWebEngineView
@@ -24,14 +27,14 @@ from planes import get_lista
 def _get_heading(trajectory):
     if not trajectory or len(trajectory) < 2:
         return 0
-
+#latitude is in [0] and longitude is in [1]
     try:
         current = trajectory[0]
         next_point = trajectory[1]
-        lat1 = radians(float(current["lat"]))
-        lon1 = radians(float(current["lon"]))
-        lat2 = radians(float(next_point["lat"]))
-        lon2 = radians(float(next_point["lon"]))
+        lat1 = radians(float(current[0]))
+        lon1 = radians(float(current[1]))
+        lat2 = radians(float(next_point[0]))
+        lon2 = radians(float(next_point[1]))
     except (KeyError, TypeError, ValueError, IndexError):
         return 0
 
@@ -53,6 +56,17 @@ def _build_plane_icon(heading):
     )
 
 
+def _build_airport_icon():
+    return folium.DivIcon(
+        html=(
+            '<div style="font-size:24px; color:#3b82f6; '
+            'display:inline-block;">✈</div>'
+        ),
+        icon_size=(24, 24),
+        icon_anchor=(12, 12),
+    )
+
+
 class MapWindow(QMainWindow):
 
     def __init__(self):
@@ -64,7 +78,48 @@ class MapWindow(QMainWindow):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
 
-        layout = QHBoxLayout(central_widget)
+        main_layout = QVBoxLayout(central_widget)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(10)
+
+        toolbar = QWidget()
+        toolbar_layout = QHBoxLayout(toolbar)
+        toolbar_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.refresh_button = QPushButton("Atualizar dados")
+        self.refresh_button.setMinimumHeight(50)
+        self.refresh_button.setMinimumWidth(190)
+        self.refresh_button.setStyleSheet(
+            "QPushButton {"
+            "background-color: #ffffff;"
+            "color: #000000;"
+            "border: 1px solid #000000;"
+            "border-radius: 18px;"
+            "padding: 12px 22px;"
+            "font-size: 13pt;"
+            "font-weight: 700;"
+            "}"
+            "QPushButton:hover {"
+            "background-color: #f3f4f6;"
+            "border-color: #000000;"
+            "}"
+            "QPushButton:pressed {"
+            "background-color: #e5e7eb;"
+            "border-color: #000000;"
+            "}"
+            "QPushButton:disabled {"
+            "background-color: #f3f4f6;"
+            "border-color: #000000;"
+            "color: #000000;"
+            "}"
+        )
+        self.refresh_button.clicked.connect(self.refresh_map_data)
+        toolbar_layout.addWidget(self.refresh_button)
+        toolbar_layout.addStretch()
+
+        main_layout.addWidget(toolbar)
+
+        content_layout = QHBoxLayout()
 
         self.info_panel = QTextEdit()
         self.info_panel.setFixedWidth(320)
@@ -79,14 +134,14 @@ class MapWindow(QMainWindow):
             "font-family: Arial, sans-serif;"
             "font-size: 12pt;"
             "color: #1f2937;"
-            "}" 
+            "}"
         )
 
         self.view = QWebEngineView()
 
-        layout.addWidget(self.view)
-        layout.addWidget(self.info_panel)
-
+        content_layout.addWidget(self.view)
+        content_layout.addWidget(self.info_panel)
+        main_layout.addLayout(content_layout)
 
         self.bridge = Bridge()
         self.bridge.planeClicked.connect(self.update_panel)
@@ -95,6 +150,16 @@ class MapWindow(QMainWindow):
         self.channel.registerObject("bridge", self.bridge)
         self.view.page().setWebChannel(self.channel)
 
+        self.airports = pd.read_csv("airports.csv")
+
+        # apenas aeroportos
+        self.airports = self.airports[
+            self.airports["type"].isin([
+                "small_airport",
+                "medium_airport",
+                "large_airport"
+            ])
+        ] 
         self.update_map()
 
     @staticmethod
@@ -115,8 +180,18 @@ class MapWindow(QMainWindow):
         except (OverflowError, OSError, ValueError):
             return str(value)
 
+    def get_nearby_airports(self, lat, lon, delta=0.2):
+
+        nearby = self.airports[
+        (self.airports["latitude_deg"].between(lat - delta, lat + delta)) &
+        (self.airports["longitude_deg"].between(lon - delta, lon + delta))
+    ]
+
+        return nearby
+
     def update_panel(self, callsign, lat, lon, time):
         safe_callsign = html.unescape(callsign).replace('<div>', '').replace('</div>', '')
+        airports = self.get_nearby_airports(lat, lon)
         safe_time = html.escape(self._format_timestamp(time))
         self.info_panel.setHtml(
             f"<div style='font-size:14pt; font-weight:bold; margin-bottom:8px;'>{safe_callsign}</div>"
@@ -124,9 +199,18 @@ class MapWindow(QMainWindow):
             f"<div style='font-size:11pt; line-height:1.5;'>"
             f"<b>Latitude:</b> {lat}<br/>"
             f"<b>Longitude:</b> {lon}<br/>"
-            f"<b>Data e hora:</b> {safe_time}"
+            f"<b>Data e hora:</b> {safe_time}<br/>"
+            f"<b>Aeroporto de origem:</b> {airports.iloc[0]['name'] if not airports.empty else 'N/A'}"
             f"</div>"
         )
+
+    def refresh_map_data(self):
+        self.refresh_button.setEnabled(False)
+        self.refresh_button.setText("Atualizando...")
+        self.info_panel.setPlainText("Atualizando dados da API...")
+        self.update_map()
+        self.refresh_button.setEnabled(True)
+        self.refresh_button.setText("Atualizar dados")
 
     def update_map(self):
 
@@ -138,25 +222,38 @@ class MapWindow(QMainWindow):
 
         planes = get_lista()
 
-        for p in planes:
-            trajectory = p.get("trajectory", []) or []
-            heading = _get_heading(trajectory)
+        plane_data = [
+            {
+                "callsign": plane["callsign"],
+                "icao": plane["icao"],
+                "route_points": [[point["lat"], point["lon"]] for point in plane.get("trajectory", []) if point.get("pred") is False],
+                "pred_points": [[point["lat"], point["lon"]] for point in plane.get("trajectory", []) if point.get("pred") is True],
+            }
+            for plane in planes
+        ]
+        
+        for p in plane_data:
+            trajectory = p.get("route_points", []) or []
+            if not trajectory:
+                continue
+
+            heading = _get_heading(trajectory[-2:])
             folium.Marker(
-                location=[trajectory[0]["lat"], trajectory[0]["lon"]],
+                location=[p["route_points"][-1][0], p["route_points"][-1][1]],
                 tooltip=p["icao"],
                 icon=_build_plane_icon(heading),
             ).add_to(m)
 
-        plane_data = [
-            {
-                "callsign": plane["callsign"],
-                "lat": plane["trajectory"][0]["lat"],
-                "lon": plane["trajectory"][0]["lon"],
-                "time": plane["trajectory"][0]["timestamp"],
-                "route_points": [[point["lat"], point["lon"]] for point in plane.get("trajectory", [])],
-            }
-            for plane in planes
-        ]
+            nearby = self.get_nearby_airports(p["route_points"][0][0], p["route_points"][0][1])
+            if not nearby.empty:
+                airport = nearby.iloc[0]
+                folium.Marker(
+                    location=[float(airport["latitude_deg"]), float(airport["longitude_deg"])],
+                    tooltip=airport["name"],
+                    icon=_build_airport_icon(),
+                ).add_to(m)
+
+
 
         channel_js = """
         <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
@@ -173,6 +270,8 @@ class MapWindow(QMainWindow):
         <script>
         let planeData = """ + json.dumps(plane_data) + """;
         let currentLine = null;
+        let currentPredLine = null;
+        let currentConnectorLine = null;
 
         function normalizeText(value) {
             return String(value || "")
@@ -184,6 +283,14 @@ class MapWindow(QMainWindow):
         function findPlaneMatch(tooltip, latlng) {
             const normalizedTooltip = normalizeText(tooltip);
 
+            const byIcao = planeData.find(function(item) {
+                return normalizeText(item.icao) === normalizedTooltip;
+            });
+
+            if (byIcao) {
+                return byIcao;
+            }
+
             const byCallsign = planeData.find(function(item) {
                 return normalizeText(item.callsign) === normalizedTooltip;
             });
@@ -193,7 +300,10 @@ class MapWindow(QMainWindow):
             }
 
             return planeData.find(function(item) {
-                return Math.abs(item.lat - latlng.lat) < 0.0001 && Math.abs(item.lon - latlng.lng) < 0.0001;
+                const lastRoutePoint = item.route_points && item.route_points[item.route_points.length - 1];
+                return lastRoutePoint &&
+                    Math.abs(lastRoutePoint[0] - latlng.lat) < 0.0001 &&
+                    Math.abs(lastRoutePoint[1] - latlng.lng) < 0.0001;
             }) || null;
         }
 
@@ -215,20 +325,60 @@ class MapWindow(QMainWindow):
                             let tooltip = p.getTooltip() ? p.getTooltip().getContent() : "N/A";
                             let matchedPlane = findPlaneMatch(tooltip, latlng);
                             let routePoints = matchedPlane ? matchedPlane.route_points : [];
+                            let predPoints = matchedPlane ? matchedPlane.pred_points : [];
 
                             if (map) {
                                 if (currentLine) {
                                     map.removeLayer(currentLine);
                                 }
+                                if (currentPredLine) {
+                                    map.removeLayer(currentPredLine);
+                                }
+                                if (currentConnectorLine) {
+                                    map.removeLayer(currentConnectorLine);
+                                }
 
                                 currentLine = L.polyline(
-                                    routePoints.concat([[latlng.lat, latlng.lng]]),
+                                    routePoints,
                                     {
                                         color: 'blue',
                                         weight: 5,
                                         opacity: 0.8
                                     }
                                 ).addTo(map);
+
+                                if (
+                                    routePoints &&
+                                    predPoints &&
+                                    routePoints.length > 0 &&
+                                    predPoints.length > 0
+                                ) {
+                                    currentConnectorLine = L.polyline(
+                                        [routePoints[routePoints.length - 1], predPoints[0]],
+                                        {
+                                            color: 'red',
+                                            weight: 3,
+                                            opacity: 1.0
+                                        }
+                                    ).addTo(map);
+                                    } else {
+                                    currentConnectorLine = null;
+                                    }
+
+                                // draw predicted points as a grey dotted line if available
+                                if (predPoints && predPoints.length > 0) {
+                                    currentPredLine = L.polyline(
+                                        predPoints,
+                                        {
+                                            color: '#6b7280',
+                                            weight: 3,
+                                            opacity: 0.9,
+                                            dashArray: '6, 8'
+                                        }
+                                    ).addTo(map);
+                                } else {
+                                    currentPredLine = null;
+                                }
 
                                 if (map.getZoom() !== 6) {
                                     map.setView([latlng.lat, latlng.lng], map.getZoom(), {animate: true, duration: 0.7});
