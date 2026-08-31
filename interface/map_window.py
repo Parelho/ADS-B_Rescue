@@ -1,6 +1,7 @@
 import io
 import html
 import json
+import math
 import pandas as pd
 from datetime import datetime, timezone
 from math import atan2, cos, degrees, radians, sin
@@ -29,8 +30,8 @@ def _get_heading(trajectory):
         return 0
 #latitude is in [0] and longitude is in [1]
     try:
-        current = trajectory[0]
-        next_point = trajectory[1]
+        current = trajectory[-1]
+        next_point = trajectory[-2]
         lat1 = radians(float(current[0]))
         lon1 = radians(float(current[1]))
         lat2 = radians(float(next_point[0]))
@@ -65,6 +66,20 @@ def _build_airport_icon():
         icon_size=(24, 24),
         icon_anchor=(12, 12),
     )
+
+
+def _make_circle(lat, lon, radius_deg=0.08, points=72):
+    """Generate circle coordinates around a point for map visualization."""
+    coords = []
+    for i in range(points + 1):
+        angle = 2 * 3.14159265359 * i / points
+        dlat = radius_deg * sin(angle)
+        dlon = (
+            radius_deg * cos(angle)
+            / max(cos(radians(lat)), 1e-6)
+        )
+        coords.append([lat + dlat, lon + dlon])
+    return coords
 
 
 class MapWindow(QMainWindow):
@@ -231,7 +246,16 @@ class MapWindow(QMainWindow):
             }
             for plane in planes
         ]
-        
+
+        for p in plane_data:
+            pred_points = p.get("pred_points", []) or []
+            if pred_points:
+                last_pred_lat = pred_points[-1][0]
+                last_pred_lon = pred_points[-1][1]
+                p["search_area"] = _make_circle(last_pred_lat, last_pred_lon, radius_deg=0.08)
+            else:
+                p["search_area"] = None
+
         for p in plane_data:
             trajectory = p.get("route_points", []) or []
             if not trajectory:
@@ -272,6 +296,7 @@ class MapWindow(QMainWindow):
         let currentLine = null;
         let currentPredLine = null;
         let currentConnectorLine = null;
+        let currentSearchArea = null;
 
         function normalizeText(value) {
             return String(value || "")
@@ -337,6 +362,9 @@ class MapWindow(QMainWindow):
                                 if (currentConnectorLine) {
                                     map.removeLayer(currentConnectorLine);
                                 }
+                                if (currentSearchArea) {
+                                    map.removeLayer(currentSearchArea);
+                                }
 
                                 currentLine = L.polyline(
                                     routePoints,
@@ -353,19 +381,11 @@ class MapWindow(QMainWindow):
                                     routePoints.length > 0 &&
                                     predPoints.length > 0
                                 ) {
-                                    currentConnectorLine = L.polyline(
-                                        [routePoints[routePoints.length - 1], predPoints[0]],
-                                        {
-                                            color: 'red',
-                                            weight: 3,
-                                            opacity: 1.0
-                                        }
-                                    ).addTo(map);
+                                    currentConnectorLine = null
                                     } else {
                                     currentConnectorLine = null;
                                     }
 
-                                // draw predicted points as a grey dotted line if available
                                 if (predPoints && predPoints.length > 0) {
                                     currentPredLine = L.polyline(
                                         predPoints,
@@ -378,6 +398,20 @@ class MapWindow(QMainWindow):
                                     ).addTo(map);
                                 } else {
                                     currentPredLine = null;
+                                }
+
+                                if (matchedPlane && matchedPlane.search_area && matchedPlane.search_area.length > 0) {
+                                    currentSearchArea = L.polygon(
+                                        matchedPlane.search_area,
+                                        {
+                                            color: '#3b82f6',
+                                            fillColor: '#3b82f6',
+                                            fillOpacity: 0.15,
+                                            weight: 2
+                                        }
+                                    ).addTo(map);
+                                } else {
+                                    currentSearchArea = null;
                                 }
 
                                 if (map.getZoom() !== 6) {
