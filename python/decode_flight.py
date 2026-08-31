@@ -1,50 +1,58 @@
 import csv
 import re
 import sys
+
 csv.field_size_limit(sys.maxsize)
 
 file_path = "output_old_knn.csv"
 
 rows = []
 
-with open(file_path, newline='') as f:
+with open(file_path, newline="", encoding="utf-8") as f:
     reader = csv.DictReader(f)
 
     for row in reader:
         if row["estdepartureairport"] == "KMMU":
             rows.append(row)
 
+
 track_pattern = re.compile(
-    r'time=([0-9]+), latitude=([\-0-9.]+), longitude=([\-0-9.]+), altitude=([\-0-9.]+).*?heading=([\-0-9.]+)'
+    r"time=([0-9]+), latitude=([\-0-9.]+), longitude=([\-0-9.]+), altitude=([\-0-9.]+).*?heading=([\-0-9.]+)"
 )
+
 
 def parse_track(track_str):
     coords = []
 
     matches = track_pattern.findall(track_str)
 
-    for t, lat, lon, heading, altitude in matches:
+    for t, lat, lon, altitude, heading in matches:
         coords.append(
             (
                 int(t),
                 float(lat),
                 float(lon),
                 float(heading),
-                float(altitude)
+                float(altitude),
             )
         )
 
     return coords
 
+
 output_rows = []
 
 for row in rows:
+
     track = row["track"]
 
     if not track:
         continue
 
-    firstseen = row["firstseen"]
+    firstseen = int(row["firstseen"])
+
+    icao = row.get("icao24", "").strip()
+    callsign = row.get("callsign", "").strip()
 
     estdepartureairport = row["estdepartureairport"]
     estarrivalairport = row["estarrivalairport"]
@@ -52,26 +60,38 @@ for row in rows:
     coords = parse_track(track)
 
     for t, lat, lon, heading, altitude in coords:
-        output_rows.append({
-            "firstseen": int(firstseen),
-            "time": t,
-            "lat": lat,
-            "lon": lon,
-            "heading": heading,
-            "altitude": altitude,
-            "estdepartureairport": estdepartureairport,
-            "estarrivalairport": estarrivalairport
-        })
 
-output_rows = sorted(
-    output_rows,
-    key=lambda x: (x["firstseen"], x["time"])
+        output_rows.append(
+            {
+                "icao24": icao,
+                "callsign": callsign,
+                "firstseen": firstseen,
+                "time": t,
+                "lat": lat,
+                "lon": lon,
+                "heading": heading,
+                "altitude": altitude,
+                "estdepartureairport": estdepartureairport,
+                "estarrivalairport": estarrivalairport,
+            }
+        )
+
+
+output_rows.sort(
+    key=lambda x: (
+        x["firstseen"],
+        x["time"],
+    )
 )
 
-with open("trajectory.csv", "w", newline='') as f:
+
+with open("trajectory.csv", "w", newline="", encoding="utf-8") as f:
+
     writer = csv.DictWriter(
         f,
         fieldnames=[
+            "icao24",
+            "callsign",
             "firstseen",
             "time",
             "lat",
@@ -79,9 +99,11 @@ with open("trajectory.csv", "w", newline='') as f:
             "heading",
             "altitude",
             "estdepartureairport",
-            "estarrivalairport"
-        ]
+            "estarrivalairport",
+        ],
     )
 
     writer.writeheader()
     writer.writerows(output_rows)
+
+print(f"Saved {len(output_rows):,} trajectory points.")
