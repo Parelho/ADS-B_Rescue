@@ -16,7 +16,11 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QVBoxLayout,
     QPushButton,
+    QLineEdit,
+    QLabel,
+    QCompleter,
 )
+from PyQt6.QtCore import QStringListModel, Qt
 
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebChannel import QWebChannel
@@ -30,12 +34,12 @@ def _get_heading(trajectory):
         return 0
 #latitude is in [0] and longitude is in [1]
     try:
+        previous = trajectory[-2]
         current = trajectory[-1]
-        next_point = trajectory[-2]
-        lat1 = radians(float(current[0]))
-        lon1 = radians(float(current[1]))
-        lat2 = radians(float(next_point[0]))
-        lon2 = radians(float(next_point[1]))
+        lat1 = radians(float(previous[0]))
+        lon1 = radians(float(previous[1]))
+        lat2 = radians(float(current[0]))
+        lon2 = radians(float(current[1]))
     except (KeyError, TypeError, ValueError, IndexError):
         return 0
 
@@ -47,10 +51,13 @@ def _get_heading(trajectory):
 
 
 def _build_plane_icon(heading):
+    icon_rotation = (heading - 90) % 360
     return folium.DivIcon(
         html=(
-            f'<div style="font-size:36px; color:#dc2626; '
-            f'display:inline-block; transform:rotate({heading}deg);">✈</div>'
+            f'<div style="width:36px; height:36px; line-height:36px; '
+            f'text-align:center; font-size:36px; color:#dc2626; '
+            f'display:block; transform:rotate({icon_rotation}deg); '
+            f'transform-origin:18px 18px;">✈</div>'
         ),
         icon_size=(36, 36),
         icon_anchor=(18, 18),
@@ -100,7 +107,9 @@ class MapWindow(QMainWindow):
         toolbar = QWidget()
         toolbar_layout = QHBoxLayout(toolbar)
         toolbar_layout.setContentsMargins(0, 0, 0, 0)
+        toolbar_layout.setSpacing(10)
 
+        # Refresh button on the left
         self.refresh_button = QPushButton("Atualizar dados")
         self.refresh_button.setMinimumHeight(50)
         self.refresh_button.setMinimumWidth(190)
@@ -130,6 +139,37 @@ class MapWindow(QMainWindow):
         )
         self.refresh_button.clicked.connect(self.refresh_map_data)
         toolbar_layout.addWidget(self.refresh_button)
+
+        toolbar_layout.addStretch()
+
+        # Search bar for planes in the center
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Digite o código ICAO")
+        self.search_input.setMaximumWidth(300)
+        self.search_input.setMinimumHeight(40)
+        self.search_input.setStyleSheet(
+            "QLineEdit {"
+            "background-color: #ffffff;"
+            "color: #000000;"
+            "border: 2px solid #d1d5db;"
+            "border-radius: 8px;"
+            "padding: 8px 12px;"
+            "font-size: 11pt;"
+            "}"
+            "QLineEdit:focus {"
+            "border: 2px solid #3b82f6;"
+            "background-color: #f9fafb;"
+            "}"
+        )
+        self.search_model = QStringListModel(self)
+        self.search_completer = QCompleter(self.search_model, self)
+        self.search_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.search_completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        self.search_completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        self.search_input.setCompleter(self.search_completer)
+        self.search_completer.activated[str].connect(self.select_plane)
+        toolbar_layout.addWidget(self.search_input)
+
         toolbar_layout.addStretch()
 
         main_layout.addWidget(toolbar)
@@ -174,7 +214,10 @@ class MapWindow(QMainWindow):
                 "medium_airport",
                 "large_airport"
             ])
-        ] 
+        ]
+
+        # Store plane data for the search suggestions.
+        self.plane_data = []
         self.update_map()
 
     @staticmethod
@@ -227,6 +270,12 @@ class MapWindow(QMainWindow):
         self.refresh_button.setEnabled(True)
         self.refresh_button.setText("Atualizar dados")
 
+    def select_plane(self, icao):
+        """Center the map and trigger the selected plane marker click."""
+        self.view.page().runJavaScript(
+            "window.selectPlaneByIcao(%s);" % json.dumps(icao)
+        )
+
     def update_map(self):
 
         m = folium.Map(
@@ -237,38 +286,56 @@ class MapWindow(QMainWindow):
 
         planes = get_lista()
 
-        plane_data = [
-            {
+        plane_data = []
+        for plane in planes:
+            trajectory = plane.get("trajectory", []) or []
+            route_trajectory = [
+                point for point in trajectory if point.get("pred") is False
+            ]
+            plane_data.append({
                 "callsign": plane["callsign"],
                 "icao": plane["icao"],
-                "route_points": [[point["lat"], point["lon"]] for point in plane.get("trajectory", []) if point.get("pred") is False],
-                "pred_points": [[point["lat"], point["lon"]] for point in plane.get("trajectory", []) if point.get("pred") is True],
-            }
-            for plane in planes
-        ]
+                "time": route_trajectory[-1].get("timestamp") if route_trajectory else None,
+                "route_points": [
+                    [point["lat"], point["lon"]]
+                    for point in route_trajectory
+                ],
+                "pred_points": [
+                    [point["lat"], point["lon"]]
+                    for point in trajectory if point.get("pred") is True
+                ],
+            })
+
+        # Store all plane data for later reference
+        self.plane_data = plane_data
+        self.search_model.setStringList([
+            str(plane["icao"]).upper()
+            for plane in plane_data
+            if plane.get("icao")
+        ])
 
         for p in plane_data:
-            pred_points = p.get("pred_points", []) or []
-            if pred_points:
-                last_pred_lat = pred_points[-1][0]
-                last_pred_lon = pred_points[-1][1]
-                p["search_area"] = _make_circle(last_pred_lat, last_pred_lon, radius_deg=0.08)
+            route_points = p.get("route_points", []) or []
+            if route_points:
+                last_route_lat = route_points[-1][0]
+                last_route_lon = route_points[-1][1]
+                p["search_area"] = _make_circle(last_route_lat, last_route_lon, radius_deg=0.08)
             else:
                 p["search_area"] = None
 
         for p in plane_data:
-            trajectory = p.get("route_points", []) or []
-            if not trajectory:
+            route_points = p.get("route_points", []) or []
+            if not route_points:
                 continue
 
-            heading = _get_heading(trajectory[-2:])
+            heading = _get_heading(route_points)
             folium.Marker(
-                location=[p["route_points"][-1][0], p["route_points"][-1][1]],
+                location=[route_points[-1][0], route_points[-1][1]],
                 tooltip=p["icao"],
                 icon=_build_plane_icon(heading),
             ).add_to(m)
 
-            nearby = self.get_nearby_airports(p["route_points"][0][0], p["route_points"][0][1])
+            nearby = self.get_nearby_airports(route_points[0][0], route_points[0][1])
             if not nearby.empty:
                 airport = nearby.iloc[0]
                 folium.Marker(
@@ -332,6 +399,38 @@ class MapWindow(QMainWindow):
             }) || null;
         }
 
+        window.selectPlaneByIcao = function(icao) {
+            const normalizedIcao = normalizeText(icao).toUpperCase();
+            attachClicks();
+
+            for (let key in window) {
+                try {
+                    let marker = window[key];
+                    let tooltip = marker && marker.getTooltip ? marker.getTooltip() : null;
+
+                    if (
+                        marker &&
+                        marker._latlng &&
+                        tooltip &&
+                        normalizeText(tooltip.getContent()).toUpperCase() === normalizedIcao
+                    ) {
+                        let map = marker._map;
+                        if (map) {
+                            map.setView(
+                                [marker._latlng.lat, marker._latlng.lng],
+                                Math.max(map.getZoom(), 6),
+                                {animate: true, duration: 0.7}
+                            );
+                        }
+                        marker.fire('click');
+                        return true;
+                    }
+                } catch (e) {}
+            }
+
+            return false;
+        };
+
         function attachClicks(){
 
             for(let i in window){
@@ -340,7 +439,9 @@ class MapWindow(QMainWindow):
 
                     let obj = window[i];
 
-                    if(obj && obj._latlng){
+                    if(obj && obj._latlng && !obj._planeClickAttached){
+
+                        obj._planeClickAttached = true;
 
                         obj.on('click', function(e){
 
