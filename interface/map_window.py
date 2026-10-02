@@ -250,14 +250,22 @@ class MapWindow(QMainWindow):
     def update_panel(self, callsign, lat, lon, time):
         safe_callsign = html.unescape(callsign).replace('<div>', '').replace('</div>', '')
         airports = self.get_nearby_airports(lat, lon)
-        safe_time = html.escape(self._format_timestamp(time))
+        is_plane = any(
+            str(plane.get("icao", "")).upper() == callsign.upper()
+            for plane in self.plane_data
+        )
+        time_details = (
+            f"<b>Data e hora:</b> {html.escape(self._format_timestamp(time))}<br/>"
+            if is_plane
+            else ""
+        )
         self.info_panel.setHtml(
             f"<div style='font-size:14pt; font-weight:bold; margin-bottom:8px;'>{safe_callsign}</div>"
             f"<hr style='border:none; border-top:1px solid #d1d5db; margin:0 0 12px 0;'/>"
             f"<div style='font-size:11pt; line-height:1.5;'>"
             f"<b>Latitude:</b> {lat}<br/>"
             f"<b>Longitude:</b> {lon}<br/>"
-            f"<b>Data e hora:</b> {safe_time}<br/>"
+            f"{time_details}"
             f"<b>Aeroporto de origem:</b> {airports.iloc[0]['name'] if not airports.empty else 'N/A'}"
             f"</div>"
         )
