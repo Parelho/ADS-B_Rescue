@@ -24,6 +24,8 @@
 #include <linux/if.h>
 #include <cstdint>
 #include "shared_data.h"
+#include <cstdio>
+#include <cstdint>
 
 // util pinagem cm3   https://elinux.org/RPi_BCM2835_GPIOs
 
@@ -32,11 +34,18 @@ typedef struct
   long can_id;
   char data[8];
 }Can_frame_mauasat ;
-
 Can_frame_mauasat can_frame_mauasat;
 Can_frame_mauasat new_frame;
 Can_frame_mauasat frames[40];
 Can_frame_mauasat frame_ADSB;
+
+struct CANMessage
+{
+    std::string data;
+    int64_t timestamp;
+};
+
+std::vector<CANMessage> can_messages;
 
 //==========================================================================================
 // FUNCOES
@@ -54,6 +63,7 @@ char recieve_can(long *can_id, char *data);
 void can_thread(int id);
 void lora_thread(int id);
 void ADSB_thread(int id);
+void backup_thread(int id);
 
 char LED_STATUS_PIN = 32;
 
@@ -455,9 +465,10 @@ int main()
 
     time(&time_last);
 
-        // Criar threads
+    // Criar threads
     std::thread t1(can_thread,  1);
     std::thread t2(lora_thread, 2);
+    std::thread t3(backup_thread, 3);
     std::thread t4(ADSB_thread, 4);
 
 
@@ -559,9 +570,25 @@ void lora_thread(int id)
 
     while(1)
     {
+        int64_t timestamp_can = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()
+        ).count();
+
         sprintf(command_at,"AT+SEND=250:[");
         for (i = 0; i < frames_pos; i++) 
         {
+            char buffer_can[3];
+            std::string data_can = "";
+
+            for (int j = 0; j < 8; j++) 
+            {
+                snprintf(buffer_can, sizeof(buffer_can), "%02X", frames[i].data[j]);
+                data_can += buffer_can;
+            }
+            // std::cout << "CAN TM: " << data_can << std::endl;
+            
+            can_messages.push_back({data_can, timestamp_can});
+
             sprintf(command_at,"%s\"%X:%02X%02X%02X%02X%02X%02X%02X%02X\"",command_at, frames[i].can_id, frames[i].data[0], frames[i].data[1], frames[i].data[2], frames[i].data[3], frames[i].data[4], frames[i].data[5], frames[i].data[6], frames[i].data[7]);
             if ((i == 4) || (i == 9) || (i == 14)|| (i == 19) || (i == 24)|| (i == 29))
             {
@@ -589,107 +616,34 @@ void lora_thread(int id)
             }
         }
 
+        char buffer_can[3];
+        std::string data_can = "";
 
+        for (int i = 0; i < 8; i++) 
+        {
+            snprintf(buffer_can, sizeof(buffer_can), "%02X", data_tx[i]);
+            data_can += buffer_can;
+        }
+        // std::cout << "TC CAN: " << data_can << std::endl;
+        can_messages.push_back({data_can, timestamp_can});
         // tc can 0xf800
         sprintf(command_at,"AT+SEND=250:[\"%X:%02X%02X%02X%02X%02X%02X%02X%02X\"", can_id_tx, data_tx[0], data_tx[1], data_tx[2], data_tx[3], data_tx[4], data_tx[5], data_tx[6], data_tx[7]);
 
-
-        // if(1) // se leu arquivo
-        // {
-        //     // lê arquivo
-        //     std::ifstream inputFile("/home/pi/cubesat/output.txt");
-        //     if (!inputFile.is_open()) 
-        //     {
-        //         std::cerr << "Error opening output.txt" << std::endl;
-        //     }
-        //     else
-        //     {    
-        //         std::string line_ADSB;
-        //         std::getline(inputFile, line_ADSB);
-        //         std::cout << line_ADSB << std::endl;
-        //         inputFile.close();
-        //         area_spill = 0;
-        //         area_spill_pct = 0;
-        //         mmsi_ADSB = 0;
-
-        //         //std::cout << line_ADSB.length() << std::endl;
-        //         start_pos = 1;
-        //         end_pos = line_ADSB.find(delimiter);
-        //         if (line_ADSB.length() > 9)
-        //         {
-        //             if (end_pos < std::string::npos)
-        //             {
-        //                 partial_line_ADSB = line_ADSB.substr(start_pos, end_pos - start_pos);
-        //                 start_pos = end_pos + delimiter.length()+2;
-        //                 end_pos = line_ADSB.find(delimiter, start_pos);
-        //                 if (partial_line_ADSB.length() > 0)
-        //                 {
-        //                     area_spill = std::stoi(partial_line_ADSB) / 100;
-        //                 }
-        //                 else
-        //                 {
-        //                     area_spill = 0;
-        //                 }
-        //             // std::cout << area_spill << std::endl;
-        //             }
-        //             if (end_pos < std::string::npos)
-        //             {
-        //                 partial_line_ADSB = line_ADSB.substr(start_pos, end_pos - start_pos);
-        //                 start_pos = end_pos + delimiter.length()+4;
-        //                 end_pos = line_ADSB.find(delimiter, start_pos);
-        //                 if (partial_line_ADSB.length() > 0)
-        //                 {
-        //                     area_spill_pct = std::stoi(partial_line_ADSB);
-        //                 }
-        //                 else
-        //                 {
-        //                     area_spill_pct = 0;
-        //                 }
-        //             // std::cout << area_spill_pct << std::endl;
-        //             }
-        //             if (end_pos <= std::string::npos)
-        //             {
-        //                 partial_line_ADSB = line_ADSB.substr(start_pos, end_pos - start_pos);
-        //                 if (partial_line_ADSB.length() > 0)
-        //                 {
-        //                     mmsi_ADSB = (std::stoi(partial_line_ADSB));
-        //                 }
-        //                 else
-        //                 {
-        //                     mmsi_ADSB = 0;
-        //                 }
-        //             // std::cout << mmsi_ADSB << std::endl;
-        //             }
-        //         }
-        //         else
-        //         {
-        //             std::cout << "Erro de detecção de mancha" << std::endl;
-        //         }
-
-        //         frame_ADSB.can_id  = 0x3808; //TTC_CAN ID
-        //         frame_ADSB.data[0] = mmsi_ADSB >> 24;    // mmmsi high
-        //         frame_ADSB.data[1] = mmsi_ADSB >> 16;  // mmmsi mid-high
-        //         frame_ADSB.data[2] = mmsi_ADSB >> 8; // // mmmsi midlow
-        //         frame_ADSB.data[3] = mmsi_ADSB;  // mmmsi low
-        //         frame_ADSB.data[4] = (area_spill) >> 8; // area high div 100
-        //         frame_ADSB.data[5] = (area_spill); // area low  div 100
-        //         frame_ADSB.data[6] = area_spill_pct >> 8; // percentual high * 10
-        //         frame_ADSB.data[7] = area_spill_pct; // percentual low * 10
-                
-        //         sprintf(command_at,"%s,\"%X:%02X%02X%02X%02X%02X%02X%02X%02X\"",command_at, frame_ADSB.can_id, frame_ADSB.data[0], frame_ADSB.data[1], frame_ADSB.data[2], frame_ADSB.data[3], frame_ADSB.data[4], frame_ADSB.data[5], frame_ADSB.data[6], frame_ADSB.data[7]);
-
-        //     }
-        // }
-        // sprintf(command_at,"%s]",command_at);
-        // sendATCommand(command_at , serial_port);
-        // std::this_thread::sleep_for(std::chrono::milliseconds(2000));
-        // sendATCommand("AT+RECVB=?", serial_port);
-        // std::this_thread::sleep_for(std::chrono::milliseconds(3000));
+        sprintf(command_at,"%s]",command_at);
+        sendATCommand(command_at , serial_port);
+        std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+        sendATCommand("AT+RECVB=?", serial_port);
+        std::this_thread::sleep_for(std::chrono::milliseconds(3000));
 
         // envia lora ADSB
-        can_id_tx = 0x000600C9; //
-        response_ADSB_high = response_ADSB.substr( 0, 14); std::cout <<response_ADSB_high << std::endl;
-        response_ADSB_low  = response_ADSB.substr(14, 27); std::cout <<response_ADSB_low << std::endl;
+        // std::cout << response_ADSB << std::endl;
+        can_messages.push_back({response_ADSB, timestamp_can});
+        can_id_tx = 0x000600C9;
+        response_ADSB_high = response_ADSB.substr( 0, 14);
+        // std::cout <<response_ADSB_high << std::endl;
+        response_ADSB_low  = response_ADSB.substr(14, 27);
+        // std::cout <<response_ADSB_low << std::endl;
+
         sprintf(command_at,"AT+SEND=250:[\"%X:%s\"", can_id_tx, response_ADSB_high.c_str());
         can_id_tx = 0x000600CA; //
         sprintf(command_at,"%s,\"%X:%s\"",command_at, can_id_tx, response_ADSB_low.c_str());
@@ -776,6 +730,24 @@ void ADSB_thread(int id)
     //aqui nao passa 
 
     std::cout << "ADSB_thread " << id << " finalizada." << std::endl;
+}
+
+void backup_thread(int id)
+{
+    std::cout << "backup_thread " << id << " iniciada." << std::endl;
+    while (1)
+    {
+        for (const CANMessage& message : can_messages)
+        {
+            printf("Data: %s | Timestamp: %lld\n",
+                message.data.c_str(),
+                static_cast<long long>(message.timestamp));
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+    }
+
+    std::cout << "backup_thread " << id << " finalizada." << std::endl;
 }
 
 //fim 
