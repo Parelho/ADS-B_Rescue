@@ -47,9 +47,16 @@ struct CANMessage
     std::string data;
     int64_t timestamp;
 };
-
 std::vector<CANMessage> can_messages;
 std::mutex can_messages_mutex;
+
+struct ADSBMessage
+{
+    std::string message;
+    int64_t timestamp;
+};
+std::vector<ADSBMessage> adsb_messages;
+std::mutex ADSB_messages_mutex;
 
 //==========================================================================================
 // FUNCOES
@@ -739,13 +746,13 @@ void ADSB_thread(int id)
             response = "";
 
             { // escopo mutex
-                std::lock_guard<std::mutex> lock(can_messages_mutex);
+                std::lock_guard<std::mutex> lock(ADSB_messages_mutex);
 
-                int64_t timestamp_can = std::chrono::duration_cast<std::chrono::milliseconds>(
+                int64_t timestamp_adsb = std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::system_clock::now().time_since_epoch()
                 ).count();
 
-                can_messages.push_back({"000600C9+000600CA", response_ADSB, timestamp_can});
+                adsb_messages.push_back({response_ADSB, timestamp_adsb});
             }
         } 
 
@@ -760,7 +767,9 @@ void backup_thread(int id)
     std::cout << "backup_thread " << id << " iniciada." << std::endl;
 
     const std::string filename = "/home/pi/ADS-B_Rescue/SmartLoraWan/src/can_backup.csv";
+    const std::string filename_adsb = "/home/pi/ADS-B_Rescue/SmartLoraWan/src/adsb_backup.csv";
     bool file_initialized = false;
+    bool file_initialized_adsb = false;
 
     while (1)
     {
@@ -792,15 +801,8 @@ void backup_thread(int id)
 
                     for (const CANMessage& message : can_messages)
                     {
-                        if (message.type == "000600C9, 000600CA" && message.data == "00000000000000")
-                        {
-                            std::cout << "ADS-B vazio... ignorando" << std::endl;
-                        }
-                        else
-                        {
-                            // printf("ID: %s | Data: %s | Timestamp: %lld\n", message.type.c_str(), message.data.c_str(), static_cast<long long>(message.timestamp));
-                            file << message.type << ',' << message.data << ',' << message.timestamp << '\n';
-                        }
+                        // printf("ID: %s | Data: %s | Timestamp: %lld\n", message.type.c_str(), message.data.c_str(), static_cast<long long>(message.timestamp));
+                        file << message.type << ',' << message.data << ',' << message.timestamp << '\n';
                     }
 
                     file.flush();
@@ -809,6 +811,59 @@ void backup_thread(int id)
                     {
                         // Remove messages only after a successful write.
                         can_messages.clear();
+                    }
+                    else
+                    {
+                        std::cerr << "Erro ao gravar dados no CSV." << std::endl;
+                    }
+                }
+            }
+        }
+
+        { // Escopo mutex
+            std::lock_guard<std::mutex> lock(ADSB_messages_mutex);
+
+            if (!adsb_messages.empty())
+            {
+                std::ofstream file(filename_adsb, std::ios::app);
+
+                if (!file.is_open())
+                {
+                    std::cerr << "Erro ao abrir " << filename_adsb << std::endl;
+                }
+                else
+                {
+                    // Write the CSV header if the file is empty.
+                    if (!file_initialized_adsb)
+                    {
+                        file.seekp(0, std::ios::end);
+
+                        if (file.tellp() == 0)
+                        {
+                            file << "Message,Timestamp\n";
+                        }
+
+                        file_initialized_adsb = true;
+                    }
+
+                    for (const ADSBMessage& message : adsb_messages)
+                    {
+                        if (message.message == "00000000000000")
+                        {
+                            std::cout << "ADS-B vazio... ignorando" << std::endl;
+                        }
+                        else
+                        {
+                            file << message.message << ',' << message.timestamp << '\n';
+                        }
+                    }
+
+                    file.flush();
+
+                    if (file.good())
+                    {
+                        // Remove messages only after a successful write.
+                        adsb_messages.clear();
                     }
                     else
                     {
