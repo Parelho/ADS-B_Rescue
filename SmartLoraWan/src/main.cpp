@@ -26,6 +26,8 @@
 #include "shared_data.h"
 #include <cstdio>
 #include <cstdint>
+#include <mutex>
+#include <sstream>
 
 // util pinagem cm3   https://elinux.org/RPi_BCM2835_GPIOs
 
@@ -41,11 +43,13 @@ Can_frame_mauasat frame_ADSB;
 
 struct CANMessage
 {
+    std::string type;
     std::string data;
     int64_t timestamp;
 };
 
 std::vector<CANMessage> can_messages;
+std::mutex can_messages_mutex;
 
 //==========================================================================================
 // FUNCOES
@@ -401,6 +405,14 @@ void handle_sigint(int signal )
     std::exit(0); // Exit gracefully
 }
 
+std::string to_hex(long value)
+{
+    std::stringstream ss;
+    ss << std::hex << std::uppercase << value;
+    
+    return ss.str();
+}
+
 //==========================================================================================
 // MAIN
 //==========================================================================================
@@ -587,7 +599,8 @@ void lora_thread(int id)
             }
             // std::cout << "CAN TM: " << data_can << std::endl;
             
-            can_messages.push_back({data_can, timestamp_can});
+            std::lock_guard<std::mutex> lock(can_messages_mutex);
+            can_messages.push_back({to_hex(frames[i].can_id), data_can, timestamp_can});
 
             sprintf(command_at,"%s\"%X:%02X%02X%02X%02X%02X%02X%02X%02X\"",command_at, frames[i].can_id, frames[i].data[0], frames[i].data[1], frames[i].data[2], frames[i].data[3], frames[i].data[4], frames[i].data[5], frames[i].data[6], frames[i].data[7]);
             if ((i == 4) || (i == 9) || (i == 14)|| (i == 19) || (i == 24)|| (i == 29))
@@ -625,7 +638,8 @@ void lora_thread(int id)
             data_can += buffer_can;
         }
         // std::cout << "TC CAN: " << data_can << std::endl;
-        can_messages.push_back({data_can, timestamp_can});
+        std::lock_guard<std::mutex> lock(can_messages_mutex);
+        can_messages.push_back({to_hex(frames[i].can_id), data_can, timestamp_can});
         // tc can 0xf800
         sprintf(command_at,"AT+SEND=250:[\"%X:%02X%02X%02X%02X%02X%02X%02X%02X\"", can_id_tx, data_tx[0], data_tx[1], data_tx[2], data_tx[3], data_tx[4], data_tx[5], data_tx[6], data_tx[7]);
 
@@ -637,7 +651,6 @@ void lora_thread(int id)
 
         // envia lora ADSB
         // std::cout << response_ADSB << std::endl;
-        can_messages.push_back({response_ADSB, timestamp_can});
         can_id_tx = 0x000600C9;
         response_ADSB_high = response_ADSB.substr( 0, 14);
         // std::cout <<response_ADSB_high << std::endl;
@@ -724,6 +737,16 @@ void ADSB_thread(int id)
             serialPuts(serial_port_ADSB, "Mauasat Receiving ADSB : ");
             write(serial_port_ADSB, response.c_str(), response.length());
             response = "";
+
+            { // escopo mutex
+                std::lock_guard<std::mutex> lock(can_messages_mutex);
+
+                int64_t timestamp_can = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::system_clock::now().time_since_epoch()
+                ).count();
+
+                can_messages.push_back({"000600C9+000600CA", response_ADSB, timestamp_can});
+            }
         } 
 
     }
@@ -735,13 +758,64 @@ void ADSB_thread(int id)
 void backup_thread(int id)
 {
     std::cout << "backup_thread " << id << " iniciada." << std::endl;
+
+    const std::string filename = "/home/pi/ADS-B_Rescue/SmartLoraWan/src/can_backup.csv";
+    bool file_initialized = false;
+
     while (1)
     {
-        for (const CANMessage& message : can_messages)
-        {
-            printf("Data: %s | Timestamp: %lld\n",
-                message.data.c_str(),
-                static_cast<long long>(message.timestamp));
+        { // Escopo mutex
+            std::lock_guard<std::mutex> lock(can_messages_mutex);
+
+            if (!can_messages.empty())
+            {
+                std::ofstream file(filename, std::ios::app);
+
+                if (!file.is_open())
+                {
+                    std::cerr << "Erro ao abrir " << filename << std::endl;
+                }
+                else
+                {
+                    // Write the CSV header if the file is empty.
+                    if (!file_initialized)
+                    {
+                        file.seekp(0, std::ios::end);
+
+                        if (file.tellp() == 0)
+                        {
+                            file << "ID,Data,Timestamp\n";
+                        }
+
+                        file_initialized = true;
+                    }
+
+                    for (const CANMessage& message : can_messages)
+                    {
+                        if (message.type == "000600C9, 000600CA" && message.data == "00000000000000")
+                        {
+                            std::cout << "ADS-B vazio... ignorando" << std::endl;
+                        }
+                        else
+                        {
+                            // printf("ID: %s | Data: %s | Timestamp: %lld\n", message.type.c_str(), message.data.c_str(), static_cast<long long>(message.timestamp));
+                            file << message.type << ',' << message.data << ',' << message.timestamp << '\n';
+                        }
+                    }
+
+                    file.flush();
+
+                    if (file.good())
+                    {
+                        // Remove messages only after a successful write.
+                        can_messages.clear();
+                    }
+                    else
+                    {
+                        std::cerr << "Erro ao gravar dados no CSV." << std::endl;
+                    }
+                }
+            }
         }
 
         std::this_thread::sleep_for(std::chrono::milliseconds(2000));
