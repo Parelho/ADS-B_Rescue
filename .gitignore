@@ -8,3 +8,4 @@ output.txt
 *.png
 test_flight_plots
 *.json
+data
