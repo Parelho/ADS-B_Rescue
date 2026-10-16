@@ -1,5 +1,6 @@
 import type { Plane, RawPlane } from "../types";
 import { getHeading, makeCircle } from "./geo";
+import { dateToUnixSeconds, dateAfterToUnixSeconds } from "./format";
 
 const env = import.meta.env;
 
@@ -41,29 +42,65 @@ export async function fetchRawPlanes(): Promise<RawPlane[]> {
   }
 }
 
-/** Equivalent to the `plane_data` construction in `MapWindow.update_map`. */
-export function normalizePlanes(raw: RawPlane[]): Plane[] {
-  return raw.map((p) => {
-    const trajectory = p.trajectory ?? [];
-    const route = trajectory.filter((pt) => pt.pred === false);
-    const routePoints = route.map((pt) => [pt.lat, pt.lon] as [number, number]);
-    const predPoints = trajectory
-      .filter((pt) => pt.pred === true)
-      .map((pt) => [pt.lat, pt.lon] as [number, number]);
-    const last = routePoints[routePoints.length - 1];
+export function normalizePlanes(
+  raw: RawPlane[],
+  startDate?: string,
+  endDate?: string,
+): Plane[] {
+  const startTimestamp = startDate
+    ? dateToUnixSeconds(startDate)
+    : undefined;
 
-    return {
-      icao: p.icao,
-      callsign: p.callsign,
-      time: route.length ? (route[route.length - 1].timestamp ?? null) : null,
-      routePoints,
-      predPoints,
-      searchArea: last ? makeCircle(last[0], last[1], 0.08) : null,
-      heading: getHeading(routePoints),
-    };
-  });
+  const endTimestamp = endDate
+    ? dateAfterToUnixSeconds(endDate)
+    : undefined;
+
+  return raw
+    .map((p) => {
+      const trajectory = (p.trajectory ?? []).filter((t) => {
+        if (typeof t.timestamp !== "number") return false;
+
+        return (
+          (startTimestamp === undefined ||
+            t.timestamp >= startTimestamp) &&
+          (endTimestamp === undefined ||
+            t.timestamp < endTimestamp)
+        );
+      });
+
+      const route = trajectory.filter((pt) => pt.pred === false);
+      const routePoints = route.map(
+        (pt) => [pt.lat, pt.lon] as [number, number],
+      );
+      const predPoints = trajectory
+        .filter((pt) => pt.pred === true)
+        .map((pt) => [pt.lat, pt.lon] as [number, number]);
+
+      const last = routePoints[routePoints.length - 1];
+
+      return {
+        icao: p.icao,
+        callsign: p.callsign,
+        time: route.length
+          ? (route[route.length - 1].timestamp ?? null)
+          : null,
+        routePoints,
+        predPoints,
+        searchArea: last
+          ? makeCircle(last[0], last[1], 0.08)
+          : null,
+        heading: getHeading(routePoints),
+      };
+    });
 }
 
-export async function loadPlanes(): Promise<Plane[]> {
-  return normalizePlanes(await fetchRawPlanes());
+export async function loadPlanes(
+  startDate?: string,
+  endDate?: string,
+): Promise<Plane[]> {
+  return normalizePlanes(
+    await fetchRawPlanes(),
+    startDate,
+    endDate,
+  );
 }

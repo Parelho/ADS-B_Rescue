@@ -6,9 +6,12 @@ import { useAirports, usePlanes } from "./hooks/useData";
 import PlaneMap, { type FocusRequest } from "./components/PlaneMap";
 import SearchBox from "./components/SearchBox";
 import InfoPanel from "./components/InfoPanel";
+import DateRangePicker from "./components/DateRangePicker";
 
 export default function App() {
-  const { planes, loading, refresh } = usePlanes();
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
+  const { planes, loading, refresh } = usePlanes(startDate, endDate);
   const { airports, error: airportsError } = useAirports();
   const [selection, setSelection] = useState<Selection | null>(null);
   const [focus, setFocus] = useState<FocusRequest | null>(null);
@@ -65,7 +68,16 @@ export default function App() {
         <button className="refresh-button" onClick={refresh} disabled={loading}>
           {loading ? "Atualizando..." : "Atualizar dados"}
         </button>
+
+        <DateRangePicker
+          onApply={(start, end) => {
+            setStartDate(start);
+            setEndDate(end);
+          }}
+        />
+
         <SearchBox options={searchOptions} onSelect={handleSearchSelect} />
+
       </header>
 
       {airportsError && (

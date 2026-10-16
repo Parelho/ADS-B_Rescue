@@ -17,3 +17,15 @@ export function formatTimestamp(value: unknown): string {
     `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())} UTC`
   );
 }
+
+/** Convert a YYYY-MM-DD date to a Unix timestamp in seconds (UTC). */
+export function dateToUnixSeconds(date: string): number {
+  const [year, month, day] = date.split("-").map(Number);
+
+  return Date.UTC(year, month - 1, day) / 1000;
+}
+
+/** Get the exclusive UTC timestamp for the day after the selected end date. */
+export function dateAfterToUnixSeconds(date: string): number {
+  return dateToUnixSeconds(date) + 24 * 60 * 60;
+}

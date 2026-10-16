@@ -20,18 +20,24 @@ export function useAirports() {
   return { airports, error };
 }
 
-export function usePlanes() {
+
+export function usePlanes(startDate = "", endDate = "") {
   const [planes, setPlanes] = useState<Plane[]>([]);
   const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      setPlanes(await loadPlanes());
+      setPlanes(
+        await loadPlanes(
+          startDate || undefined,
+          endDate || undefined,
+        ),
+      );
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [startDate, endDate]);
 
   useEffect(() => {
     void refresh();
@@ -39,3 +45,4 @@ export function usePlanes() {
 
   return { planes, loading, refresh };
 }
+
