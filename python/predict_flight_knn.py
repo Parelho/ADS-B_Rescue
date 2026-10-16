@@ -20,6 +20,9 @@ with open(file_path, newline='') as f:
         dep = row["estdepartureairport"]
         arr = row["estarrivalairport"]
 
+        icao = row["icao"]
+        callsign = row["callsign"]
+
         key = (fs, dep, arr)
 
         t = int(row["time"])
@@ -28,7 +31,17 @@ with open(file_path, newline='') as f:
         altitude = float(row["altitude"])
         heading = float(row["heading"])
 
-        flights[key].append((t, lat, lon, altitude, heading))
+        flights[key].append(
+            (
+                t,
+                lat,
+                lon,
+                altitude,
+                heading,
+                icao,
+                callsign,
+            )
+        )
 
 # Sort each flight by time
 for key in flights:
@@ -73,7 +86,7 @@ for key, flight in flights.items():
 
     coords = []
 
-    for t, lat, lon, altitude, heading in flight:
+    for t, lat, lon, altitude, heading, icao, callsign in flight:
         coords.append([
             lat - lat0,
             lon - lon0,
@@ -163,6 +176,8 @@ def predict_knn(partial_path, dep_airport, arr_airport):
 # ===== KML OUTPUT =====
 kml = simplekml.Kml()
 
+output_csv = []
+
 for idx, ((key, flight), airport_pair) in enumerate(zip(test_flights, test_airports)):
 
     print(f"Processing flight {idx+1}/{len(test_flights)}")
@@ -175,7 +190,7 @@ for idx, ((key, flight), airport_pair) in enumerate(zip(test_flights, test_airpo
 
     coords = []
 
-    for t, lat, lon, altitude, h in flight:
+    for t, lat, lon, altitude, h, icao, callsign in flight:
         coords.append([
             lat - lat0,
             lon - lon0,
@@ -198,6 +213,32 @@ for idx, ((key, flight), airport_pair) in enumerate(zip(test_flights, test_airpo
     real = denorm(path[:, :3], lat0, lon0, alt0)
     pred = denorm(predicted[:, :3], lat0, lon0, alt0)
 
+    for i in range(SEQ_LEN):
+        is_pred = i >= partial_len
+
+        point = pred[i] if is_pred else real[i]
+
+        original_index = min(
+            round(i * (len(flight) - 1) / (SEQ_LEN - 1)),
+            len(flight) - 1,
+        )
+
+        timestamp = flight[original_index][0]
+        icao = flight[original_index][5]
+        callsign = flight[original_index][6]
+
+        output_csv.append(
+            {
+                "icao": icao,
+                "callsign": callsign,
+                "timestamp": timestamp,
+                "lat": float(point[0]),
+                "lon": float(point[1]),
+                "altitude": int(round(point[2])),
+                "pred": is_pred,
+            }
+        )
+
     # ===== REAL PATH =====
     real_line = kml.newlinestring(
         name=f"Real {idx} {dep}->{arr}",
@@ -219,6 +260,30 @@ for idx, ((key, flight), airport_pair) in enumerate(zip(test_flights, test_airpo
     pred_line.style.linestyle.color = simplekml.Color.red
 
 # ===== SAVE =====
+with open(
+    "knn_predictions.csv",
+    "w",
+    newline="",
+    encoding="utf-8",
+) as f:
+    writer = csv.DictWriter(
+        f,
+        fieldnames=[
+            "icao",
+            "callsign",
+            "timestamp",
+            "lat",
+            "lon",
+            "altitude",
+            "pred",
+        ],
+    )
+
+    writer.writeheader()
+    writer.writerows(output_csv)
+
+print(f"Saved {len(output_csv):,} points to knn_predictions.csv")
+
 kml.save("knn_flight_predictions.kml")
 
 print("Saved knn_flight_predictions.kml")

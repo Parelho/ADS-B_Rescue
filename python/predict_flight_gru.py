@@ -15,6 +15,8 @@ from torch.utils.data import Dataset, DataLoader
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 
+import csv
+
 
 # =========================================================
 # Reproducibility
@@ -49,8 +51,10 @@ TIME_CANDIDATES = ["time", "timestamp", "lastseen", "firstseen", "time_position"
 @dataclass
 class FlightSample:
     key: Tuple[str, str, str]
-    values: np.ndarray  # (T, 3) float32 in original units
-    times: Optional[np.ndarray] = None
+    values: np.ndarray
+    times: np.ndarray
+    icao: np.ndarray
+    callsign: np.ndarray
 
 
 # =========================================================
@@ -83,8 +87,8 @@ def load_adsb_csv(csv_path: str) -> pd.DataFrame:
 
 def split_flights(
     df: pd.DataFrame,
-    val_ratio: float = 0.29,
-    test_ratio: float = 0.01,
+    val_ratio: float = 0.28,
+    test_ratio: float = 0.02,
     seed: int = 42,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     flight_keys = df.groupby(KEY_COLS, sort=False).size().index.tolist()
@@ -128,8 +132,11 @@ def group_flights(df: pd.DataFrame) -> List[FlightSample]:
 
         values = grp[FEATURE_COLS].to_numpy(dtype=np.float32)
         times = grp[time_col].to_numpy(dtype=np.float32) if time_col else None
+        icao = grp["icao"].astype(str).to_numpy()
+        callsign = grp["callsign"].fillna("").astype(str).to_numpy()
+
         key = tuple(str(v) for v in key)
-        flights.append(FlightSample(key, values, times))
+        flights.append(FlightSample(key, values, times, icao, callsign))
 
     return flights
 
@@ -683,22 +690,40 @@ def run(
     print(f"[data] Test flights kept:  {len(test_flights)}")
 
     scaler = fit_scaler(train_flights)
+
     train_loader, val_loader, test_loader = make_loaders(
-        train_flights, val_flights, test_flights, scaler, batch_size
+        train_flights,
+        val_flights,
+        test_flights,
+        scaler,
+        batch_size,
     )
 
     model = FlightSequenceModel(hidden_dim=hidden_dim).to(device)
 
     if load_path and os.path.exists(load_path):
         checkpoint = torch.load(load_path, map_location=device)
+
         model.load_state_dict(checkpoint["model_state"])
+
         scaler.mean_ = checkpoint["scaler_mean"]
         scaler.scale_ = checkpoint["scaler_scale"]
         scaler.var_ = checkpoint["scaler_var"]
         scaler.n_features_in_ = 3
+
         print(f"[load] Loaded checkpoint from '{load_path}'")
+
     else:
-        model, train_hist, val_hist = train_model(model, train_loader, val_loader, device, epochs, lr)
+
+        model, train_hist, val_hist = train_model(
+            model,
+            train_loader,
+            val_loader,
+            device,
+            epochs,
+            lr,
+        )
+
         torch.save(
             {
                 "model_state": model.state_dict(),
@@ -710,18 +735,29 @@ def run(
             },
             save_path,
         )
+
         print(f"[save] Saved checkpoint to '{save_path}'")
 
-    test_stats = evaluate_in_original_units(model, test_loader, device, scaler)
+    test_stats = evaluate_in_original_units(
+        model,
+        test_loader,
+        device,
+        scaler,
+    )
+
     print(
         "[eval] "
         f"HorizRMSE={test_stats['horiz_rmse']:.3f}  "
         f"RMSE={test_stats['rmse_all']:.3f}  "
         f"MAE={test_stats['mae_all']:.3f}"
     )
+
     print("[note] This version trains on continuous paths with no synthetic gaps.")
 
+    output_csv = []
+
     if len(test_flights) > 0:
+
         plots_dir = "test_flight_plots"
         os.makedirs(plots_dir, exist_ok=True)
 
@@ -734,15 +770,40 @@ def run(
                 device,
             )
 
+            true_len = len(original)
+            split = max(2, true_len // 2)
+
+            # ==================================================
+            # EXPORT JSON
+            # ==================================================
+
+            for i in range(true_len):
+
+                is_pred = i >= split
+
+                point = predicted[i] if is_pred else original[i]
+
+                output_csv.append(
+                    {
+                        "icao": sample.icao[i],
+                        "callsign": sample.callsign[i],
+                        "timestamp": int(sample.times[i]),
+                        "lat": float(point[0]),
+                        "lon": float(point[1]),
+                        "altitude": int(round(point[2])),
+                        "pred": is_pred,
+                    }
+                )
+
+            # ==================================================
+            # PLOTS
+            # ==================================================
+
             flight_name = (
                 f"{sample.key[1]}_to_"
                 f"{sample.key[2]}_"
                 f"{sample.key[0]}"
             )
-
-            # ============================================
-            # CREATE FIGURE
-            # ============================================
 
             fig, axes = plt.subplots(
                 3,
@@ -777,13 +838,10 @@ def run(
                 )
 
                 ax.set_title(titles[i])
-
                 ax.set_ylabel(ylabels[i])
-
                 ax.grid(alpha=0.3)
 
             axes[0].legend()
-
             axes[2].set_xlabel("step")
 
             fig.suptitle(
@@ -792,18 +850,14 @@ def run(
 
             fig.tight_layout()
 
-            # ============================================
-            # SAVE FIGURE
-            # ============================================
-
             output_file = os.path.join(
                 plots_dir,
-                f"{flight_name}.png",
+                f"{flight_name}.svg",
             )
 
             fig.savefig(
                 output_file,
-                dpi=320,
+                format="svg",
                 bbox_inches="tight",
             )
 
@@ -811,10 +865,35 @@ def run(
 
             if (idx + 1) % 100 == 0:
                 print(
-                    f"[plot] "
-                    f"{idx + 1}/{len(test_flights)} plots saved"
+                    f"[plot] {idx + 1}/{len(test_flights)} plots saved"
                 )
 
+    with open(
+        "predictions.csv",
+        "w",
+        newline="",
+        encoding="utf-8",
+    ) as f:
+
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "icao",
+                "callsign",
+                "timestamp",
+                "lat",
+                "lon",
+                "altitude",
+                "pred",
+            ],
+        )
+
+        writer.writeheader()
+        writer.writerows(output_csv)
+
+    print(
+        f"[csv] Saved {len(output_csv):,} points to predictions.csv"
+    )
     print(
         f"[plot] Saved all plots to '{plots_dir}'"
     )
