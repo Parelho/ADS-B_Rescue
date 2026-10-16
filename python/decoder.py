@@ -56,6 +56,9 @@ class ADSBClient:
         self.callsigns = {}  # ICAO -> callsign
         self.buffers = {}    # ICAO -> list of pending messages
 
+        # ICAO -> latest even/odd CPR position messages
+        self.cpr_cache = {}
+
     def mark_message(self, message, error=False, reason=""):
         """Update message status in Supabase."""
         try:
@@ -119,6 +122,14 @@ class ADSBClient:
                 reason="Buffered message processed"
             )
 
+            paired_msg_id = entry.get("paired_msg_id")
+            if paired_msg_id is not None:
+                self.mark_message(
+                    {"id": paired_msg_id},
+                    error=False,
+                    reason="Paired CPR message processed"
+                )
+
             # Remove only the successfully processed entry.
             pending.pop(0)
 
@@ -171,7 +182,24 @@ class ADSBClient:
 
             # --- EXTRACT AIRCRAFT INFORMATION ---
             try:
-                timestamp = int(time.time())
+                raw_timestamp = message.get("timestamp")
+                if raw_timestamp is None:
+                    self.mark_message(
+                        message,
+                        error=True,
+                        reason="Missing message timestamp"
+                    )
+                    continue
+                try:
+                    timestamp = int(raw_timestamp)
+                except (TypeError, ValueError):
+                    self.mark_message(
+                        message,
+                        error=True,
+                        reason="Invalid message timestamp"
+                    )
+                    continue
+
                 icao = pms.adsb.icao(msg)
                 tc = pms.adsb.typecode(msg)
 
@@ -205,15 +233,63 @@ class ADSBClient:
 
                 # --- POSITION: TYPE CODES 5-18 ---
                 if 5 <= tc <= 18:
-                    lat, lon = pms.adsb.position_with_ref(
-                        msg,
-                        det_coords[0],
-                        det_coords[1]
+                    # CPR decoding requires a matching even/odd pair.
+                    # Surface messages (TC 5-8) need a reference position.
+                    is_odd = pms.adsb.oe_flag(msg)
+
+                    aircraft_cpr = self.cpr_cache.setdefault(
+                        icao,
+                        {"even": None, "odd": None}
                     )
 
-                    altitude = None
-                    if 9 <= tc <= 18:
-                        altitude = pms.adsb.altitude(msg)
+                    entry = {
+                        "msg": msg,
+                        "timestamp": timestamp,
+                        "altitude": (
+                            pms.adsb.altitude(msg)
+                            if 9 <= tc <= 18
+                            else None
+                        ),
+                        "msg_id": message["id"]
+                    }
+
+                    key = "odd" if is_odd else "even"
+                    aircraft_cpr[key] = entry
+
+                    even = aircraft_cpr["even"]
+                    odd = aircraft_cpr["odd"]
+
+                    # Wait until both CPR formats are available.
+                    if even is None or odd is None:
+                        continue
+
+                    # A pair must be reasonably close in time.
+                    if abs(even["timestamp"] - odd["timestamp"]) > 10:
+                        # Keep the newer frame and wait for its counterpart.
+                        if even["timestamp"] < odd["timestamp"]:
+                            aircraft_cpr["even"] = None
+                        else:
+                            aircraft_cpr["odd"] = None
+                        continue
+
+                    # Decode the pair. Surface positions require a reference.
+                    lat, lon = pms.adsb.position(
+                        even["msg"],
+                        odd["msg"],
+                        even["timestamp"],
+                        odd["timestamp"],
+                        lat_ref=det_coords[0] if 5 <= tc <= 8 else None,
+                        lon_ref=det_coords[1] if 5 <= tc <= 8 else None
+                    )
+
+                    # Use the most recent frame's altitude and timestamp.
+                    latest = max(
+                        (even, odd),
+                        key=lambda item: item["timestamp"]
+                    )
+
+                    altitude = latest["altitude"]
+                    position_timestamp = latest["timestamp"]
 
                     if callsign:
                         supabase.table("position_data").insert({
@@ -222,26 +298,36 @@ class ADSBClient:
                             "lat": lat,
                             "lon": lon,
                             "altitude": altitude,
-                            "timestamp": timestamp
+                            "timestamp": position_timestamp
                         }).execute()
 
+                        # Mark both CPR frames processed after the insert.
                         self.mark_message(
-                            message,
+                            {"id": even["msg_id"]},
                             error=False,
-                            reason="Position processed"
+                            reason="Even CPR position processed"
+                        )
+                        self.mark_message(
+                            {"id": odd["msg_id"]},
+                            error=False,
+                            reason="Odd CPR position processed"
                         )
 
                     else:
-                        # Keep the message pending until a callsign
-                        # becomes available. Do not mark it as used.
+                        # Buffer one decoded position, not two raw CPR frames.
                         self.buffers.setdefault(icao, []).append({
-                            "msg_id": message["id"],
+                            "msg_id": even["msg_id"],
+                            "paired_msg_id": odd["msg_id"],
                             "type": "position",
                             "lat": lat,
                             "lon": lon,
                             "altitude": altitude,
-                            "timestamp": timestamp
+                            "timestamp": position_timestamp
                         })
+
+                    # Clear the pair so it cannot be decoded repeatedly.
+                    aircraft_cpr["even"] = None
+                    aircraft_cpr["odd"] = None
 
                 # --- VELOCITY: TYPE CODE 19 ---  
                 elif tc == 19:
@@ -315,7 +401,7 @@ class ADSBClient:
                 )
 
 
-det_coords = [-21.8877932497327, -49.013558624205324]
+det_coords = [-23.64699287757069, -46.57313694232773]
 
 load_dotenv()
 url: str = os.environ.get("SUPABASE_URL")
@@ -332,7 +418,7 @@ while True:
         print("Performing database chores...")
         try:
             # 1. Expire old, unprocessed messages.
-            expire_old_messages()
+            # expire_old_messages()
 
             # 2. Remove duplicates and rebuild trajectories.
             supabase.rpc("run_database_chores").execute()
@@ -350,4 +436,4 @@ while True:
     messages = fetch_all_rows("raw_msg")
     client.handle_messages(messages)
 
-    time.sleep(60)
+    time.sleep(5)
