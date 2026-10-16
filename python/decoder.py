@@ -29,6 +29,26 @@ def fetch_all_rows(table_name):
 
     return all_data
 
+def expire_old_messages():
+    """Mark unused messages older than 24 hours as expired."""
+    cutoff_timestamp = int(time.time()) - 86400
+
+    response = (
+        supabase.table("raw_msg")
+        .update({
+            "used": True,
+            "error": False
+        })
+        .eq("used", False)
+        .lt("timestamp", cutoff_timestamp)
+        .execute()
+    )
+
+    expired_count = len(response.data or [])
+    print(
+        f"Expired {expired_count} old messages "
+        f"(older than 24 hours)."
+    )
 
 class ADSBClient:
     def __init__(self):
@@ -310,9 +330,13 @@ while True:
     # Perform database chores every 5 minutes.
     if time.time() - last_db_chore_timestamp >= 300:
         print("Performing database chores...")
-
         try:
+            # 1. Expire old, unprocessed messages.
+            expire_old_messages()
+
+            # 2. Remove duplicates and rebuild trajectories.
             supabase.rpc("run_database_chores").execute()
+
             print("Database chores completed successfully.")
 
         except Exception as e:
@@ -326,4 +350,4 @@ while True:
     messages = fetch_all_rows("raw_msg")
     client.handle_messages(messages)
 
-    time.sleep(5)
+    time.sleep(60)
