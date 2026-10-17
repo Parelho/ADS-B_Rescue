@@ -29,7 +29,7 @@ export default function DateRangePicker({
       <button
         type="button"
         onClick={() => setIsOpen(!isOpen)}
-        className="h-11 rounded-md border px-4 text-[15px] shadow-sm"
+        className="h-11 rounded-md border border-gray-300 bg-white px-4 text-[15px] shadow-sm hover:bg-gray-100 active:bg-gray-200"
       >
         Selecionar período
       </button>

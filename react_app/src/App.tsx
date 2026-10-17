@@ -78,7 +78,7 @@ export default function App() {
     <div className="flex h-screen flex-col gap-2.5 bg-gray-200 p-2.5 font-[Arial,sans-serif] text-gray-800">
       <header className="grid grid-cols-[1fr_auto_1fr] items-center gap-2.5 max-[800px]:grid-cols-1">
         <button
-          className="h-11 min-w-[190px] justify-self-start rounded-[18px] border border-black bg-white px-[22px] text-[15px] font-bold text-black hover:bg-gray-100 active:bg-gray-200 disabled:cursor-default disabled:bg-gray-100 max-[800px]:min-w-0 max-[800px]:justify-self-center"
+          className="h-11 min-w-[190px] justify-self-start rounded-[18px] border-2 border-gray-300 bg-white px-[22px] text-[15px] font-bold text-black hover:bg-gray-100 active:bg-gray-200 disabled:cursor-default disabled:bg-gray-100 max-[800px]:min-w-0 max-[800px]:justify-self-center"
           onClick={refresh}
           disabled={loading}
         >
