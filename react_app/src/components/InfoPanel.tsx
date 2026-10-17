@@ -36,18 +36,21 @@ export default function InfoPanel({ selection, airports, refreshing }: Props) {
     <aside className={panelClassName}>
       <div className="mb-2 text-[19px] font-bold">{title}</div>
       <hr className="mb-3 border-t border-gray-300" />
-      <div className="text-[15px] leading-relaxed">
-        <b>Latitude:</b> {lat}
-        <br />
-        <b>Longitude:</b> {lon}
-        <br />
+      <div className="space-y-2 text-[15px] leading-relaxed">
+        <div>
+          <b>Latitude:</b> {lat}
+        </div>
+        <div>
+          <b>Longitude:</b> {lon}
+        </div>
         {isPlane && (
-          <>
+          <div>
             <b>Data e hora:</b> {formatTimestamp(selection.plane.time)}
-            <br />
-          </>
+          </div>
         )}
-        <b>Aeroporto de origem:</b> {nearby ? nearby.name : "N/A"}
+        <div>
+          <b>Aeroporto de origem:</b> {nearby ? nearby.name : "N/A"}
+        </div>
       </div>
     </aside>
   );

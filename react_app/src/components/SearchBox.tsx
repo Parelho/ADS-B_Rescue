@@ -43,7 +43,7 @@ export default function SearchBox({ options, onSelect }: Props) {
     <div className="relative w-[300px] max-w-full">
       <input
         type="text"
-        className="min-h-10 w-full rounded-lg border-2 border-gray-300 bg-white px-3 py-2 text-[15px] text-black outline-none focus:border-blue-500 focus:bg-gray-50"
+        className="h-11 w-full rounded-lg border-2 border-gray-300 bg-white px-3 text-[15px] text-black outline-none focus:border-blue-500 focus:bg-gray-50"
         placeholder="Digite o código ICAO"
         value={query}
         role="combobox"

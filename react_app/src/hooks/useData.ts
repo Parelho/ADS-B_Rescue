@@ -24,6 +24,7 @@ export function useAirports() {
 export function usePlanes(startDate = "", endDate = "") {
   const [planes, setPlanes] = useState<Plane[]>([]);
   const [loading, setLoading] = useState(true);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -34,6 +35,7 @@ export function usePlanes(startDate = "", endDate = "") {
           endDate || undefined,
         ),
       );
+      setLastUpdatedAt(new Date());
     } finally {
       setLoading(false);
     }
@@ -43,6 +45,5 @@ export function usePlanes(startDate = "", endDate = "") {
     void refresh();
   }, [refresh]);
 
-  return { planes, loading, refresh };
+  return { planes, loading, refresh, lastUpdatedAt };
 }
-

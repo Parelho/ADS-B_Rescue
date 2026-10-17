@@ -29,19 +29,17 @@ export default function DateRangePicker({
       <button
         type="button"
         onClick={() => setIsOpen(!isOpen)}
-        className="rounded-md border px-4 py-2 shadow-sm"
+        className="h-11 rounded-md border px-4 text-[15px] shadow-sm"
       >
-        Select date range
+        Selecionar período
       </button>
 
       {isOpen && (
         <div className="absolute left-0 top-full z-[1100] mt-2 w-72 rounded-lg border bg-white p-4 text-gray-900 shadow-lg">
-          <h3 className="mb-3 font-semibold">
-            Filter trajectory dates
-          </h3>
+          <h3 className="mb-3 font-semibold">Filtrar período das trajetórias</h3>
 
           <label className="mb-1 block text-sm">
-            Start date
+            Data inicial
           </label>
           <input
             type="date"
@@ -52,7 +50,7 @@ export default function DateRangePicker({
           />
 
           <label className="mb-1 block text-sm">
-            End date
+            Data final
           </label>
           <input
             type="date"
@@ -64,7 +62,7 @@ export default function DateRangePicker({
 
           {invalidRange && (
             <p className="mb-3 text-sm text-red-600">
-              End date must be on or after start date.
+              A data final deve ser igual ou posterior à data inicial.
             </p>
           )}
 
@@ -74,7 +72,7 @@ export default function DateRangePicker({
             disabled={!startDate || !endDate || invalidRange}
             className="w-full rounded-md bg-blue-600 px-4 py-2 text-white disabled:cursor-not-allowed disabled:opacity-50"
           >
-            Apply filter
+            Aplicar filtro
           </button>
         </div>
       )}
