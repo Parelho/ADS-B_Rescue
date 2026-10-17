@@ -40,10 +40,10 @@ export default function SearchBox({ options, onSelect }: Props) {
   };
 
   return (
-    <div className="search">
+    <div className="relative w-[300px] max-w-full">
       <input
         type="text"
-        className="search-input"
+        className="min-h-10 w-full rounded-lg border-2 border-gray-300 bg-white px-3 py-2 text-[15px] text-black outline-none focus:border-blue-500 focus:bg-gray-50"
         placeholder="Digite o código ICAO"
         value={query}
         role="combobox"
@@ -60,13 +60,17 @@ export default function SearchBox({ options, onSelect }: Props) {
         onKeyDown={onKeyDown}
       />
       {open && matches.length > 0 && (
-        <ul className="search-list" id={listId} role="listbox">
+        <ul
+          className="absolute inset-x-0 top-[calc(100%+4px)] z-[1000] my-0 max-h-[260px] list-none overflow-y-auto rounded-lg border border-gray-300 bg-white py-1 shadow-[0_4px_12px_rgba(0,0,0,0.12)]"
+          id={listId}
+          role="listbox"
+        >
           {matches.map((m, i) => (
             <li
               key={m}
               role="option"
               aria-selected={i === active}
-              className={i === active ? "active" : undefined}
+              className={`cursor-pointer px-3 py-1.5 ${i === active ? "bg-blue-50" : ""}`}
               // mousedown fires before the input's blur closes the list
               onMouseDown={(e) => {
                 e.preventDefault();

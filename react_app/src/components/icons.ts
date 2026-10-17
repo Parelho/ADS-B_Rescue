@@ -8,7 +8,7 @@ export function planeIcon(heading: number): L.DivIcon {
   let icon = planeIconCache.get(rotation);
   if (!icon) {
     icon = L.divIcon({
-      className: "marker-icon",
+      className: "leaflet-div-icon !border-0 !bg-transparent",
       html:
         `<div style="width:36px;height:36px;line-height:36px;text-align:center;` +
         `font-size:36px;color:#dc2626;display:block;` +
@@ -23,7 +23,7 @@ export function planeIcon(heading: number): L.DivIcon {
 
 /** Blue airport marker. Port of `_build_airport_icon`. */
 export const airportIcon = L.divIcon({
-  className: "marker-icon",
+  className: "leaflet-div-icon !border-0 !bg-transparent",
   html: '<div style="font-size:24px;color:#3b82f6;display:inline-block;">✈</div>',
   iconSize: [24, 24],
   iconAnchor: [12, 12],

@@ -63,9 +63,13 @@ export default function App() {
   }, [selection, planes]);
 
   return (
-    <div className="app bg-gray-200">
-      <header className="toolbar">
-        <button className="refresh-button" onClick={refresh} disabled={loading}>
+    <div className="flex h-screen flex-col gap-2.5 bg-gray-200 p-2.5 font-[Arial,sans-serif] text-gray-800">
+      <header className="grid grid-cols-[1fr_auto_1fr] items-center gap-2.5">
+        <button
+          className="min-h-[50px] min-w-[190px] justify-self-start rounded-[18px] border border-black bg-white px-[22px] py-3 text-[17px] font-bold text-black hover:bg-gray-100 active:bg-gray-200 disabled:cursor-default disabled:bg-gray-100 max-[800px]:min-w-0"
+          onClick={refresh}
+          disabled={loading}
+        >
           {loading ? "Atualizando..." : "Atualizar dados"}
         </button>
 
@@ -77,17 +81,19 @@ export default function App() {
         />
 
         <SearchBox options={searchOptions} onSelect={handleSearchSelect} />
-
       </header>
 
       {airportsError && (
-        <div className="banner" role="alert">
+        <div
+          className="rounded-lg border border-amber-500 bg-amber-100 px-3 py-2 text-sm"
+          role="alert"
+        >
           Não foi possível carregar airports.csv ({airportsError}). Coloque o arquivo em
           <code> public/airports.csv</code>.
         </div>
       )}
 
-      <main className="content">
+      <main className="flex min-h-0 flex-1 gap-2.5 max-[800px]:flex-col">
         <PlaneMap
           planes={planes}
           airports={airports}

@@ -79,7 +79,7 @@ export default function PlaneMap({
     <MapContainer
       center={BRAZIL_CENTER}
       zoom={4}
-      className="map"
+      className="h-full min-w-0 flex-1 rounded-[10px] max-[800px]:min-h-0"
       worldCopyJump
     >
       <TileLayer url={TILE_URL} attribution={TILE_ATTRIBUTION} />
