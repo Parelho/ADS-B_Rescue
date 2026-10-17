@@ -125,6 +125,7 @@ export default function App() {
           focus={focus}
           onSelectPlane={(p) => selectPlane(p)}
           onSelectAirport={selectAirport}
+          onClearSelection={() => setSelection(null)}
         />
         <InfoPanel
           selection={currentSelection}

@@ -7,6 +7,7 @@ import {
   TileLayer,
   Tooltip,
   useMap,
+  useMapEvents,
 } from "react-leaflet";
 import type { Airport, Plane, Selection } from "../types";
 import { findNearbyAirport } from "../lib/airports";
@@ -40,6 +41,22 @@ function MapController({ focus }: { focus: FocusRequest | null }) {
   return null;
 }
 
+function EmptyMapClickHandler({ onClear }: { onClear: () => void }) {
+  useMapEvents({
+    click(event) {
+      const target = event.originalEvent.target;
+      if (
+        target instanceof Element &&
+        target.closest(".leaflet-marker-icon, .leaflet-interactive")
+      ) {
+        return;
+      }
+      onClear();
+    },
+  });
+  return null;
+}
+
 interface Props {
   planes: Plane[];
   airports: Airport[];
@@ -47,6 +64,7 @@ interface Props {
   focus: FocusRequest | null;
   onSelectPlane: (plane: Plane) => void;
   onSelectAirport: (airport: Airport) => void;
+  onClearSelection: () => void;
 }
 
 export default function PlaneMap({
@@ -56,6 +74,7 @@ export default function PlaneMap({
   focus,
   onSelectPlane,
   onSelectAirport,
+  onClearSelection,
 }: Props) {
   const plottable = useMemo(
     () => planes.filter((p) => p.routePoints.length > 0),
@@ -84,6 +103,7 @@ export default function PlaneMap({
     >
       <TileLayer url={TILE_URL} attribution={TILE_ATTRIBUTION} />
       <MapController focus={focus} />
+      <EmptyMapClickHandler onClear={onClearSelection} />
 
       {originAirports.map((a) => (
         <Marker
@@ -102,7 +122,10 @@ export default function PlaneMap({
           <Marker
             key={`plane-${p.icao}`}
             position={last}
-            icon={planeIcon(p.heading)}
+            icon={planeIcon(
+              p.heading,
+              selectedPlane !== null && selectedPlane.icao !== p.icao,
+            )}
             eventHandlers={{ click: () => onSelectPlane(p) }}
           >
             <Tooltip>{p.icao}</Tooltip>
