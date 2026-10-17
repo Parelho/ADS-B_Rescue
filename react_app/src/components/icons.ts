@@ -26,10 +26,19 @@ export function planeIcon(heading: number, muted = false): L.DivIcon {
   return icon;
 }
 
-/** Blue airport marker. Port of `_build_airport_icon`. */
+/** Small white air traffic control tower inside a blue map pin. */
 export const airportIcon = L.divIcon({
   className: "leaflet-div-icon !border-0 !bg-transparent",
-  html: `<div style="font-size:24px;color:#3b82f6;display:inline-block;">${planeGlyph}</div>`,
-  iconSize: [24, 24],
-  iconAnchor: [12, 12],
+  html:
+    `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="28" viewBox="0 0 32 40" ` +
+    `aria-hidden="true" style="display:block;filter:drop-shadow(0 1px 2px #0005)">` +
+    `<path d="M16 1C7.7 1 1 7.7 1 16c0 6.5 7.8 15.7 13.8 21.5Q16 39 16.6 37.5C23.2 31.7 31 22.5 31 16 ` +
+    `C31 7.7 24.3 1 16 1Z" fill="#3b82f6" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/>` +
+    `<g fill="none" stroke="#fff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">` +
+    `<path d="M10 10h12v4H10zM13.5 14v9h5v-9z"/>` +
+    `<path d="M14 10v4m4-4v4"/>` +
+    `</g>` +
+    `</svg>`,
+  iconSize: [22, 28],
+  iconAnchor: [11, 26],
 });

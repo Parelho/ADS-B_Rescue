@@ -131,6 +131,7 @@ export default function App() {
           selection={currentSelection}
           airports={airports}
           refreshing={loading}
+          onClearSelection={() => setSelection(null)}
         />
       </main>
     </div>

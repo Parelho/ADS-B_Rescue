@@ -7,6 +7,7 @@ interface Props {
   selection: Selection | null;
   airports: Airport[];
   refreshing: boolean;
+  onClearSelection: () => void;
 }
 
 const panelClassName =
@@ -41,7 +42,12 @@ function DetailRow({
   );
 }
 
-export default function InfoPanel({ selection, airports, refreshing }: Props) {
+export default function InfoPanel({
+  selection,
+  airports,
+  refreshing,
+  onClearSelection,
+}: Props) {
   if (refreshing) {
     return <aside className={panelClassName}>Atualizando dados da API...</aside>;
   }
@@ -64,7 +70,30 @@ export default function InfoPanel({ selection, airports, refreshing }: Props) {
 
   return (
     <aside className={panelClassName}>
-      <div className="mb-2 text-[19px] font-bold">{title}</div>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div className="min-w-0 break-words text-[19px] font-bold">{title}</div>
+        {isPlane && (
+          <button
+            type="button"
+            className="flex size-8 shrink-0 items-center justify-center rounded-full text-gray-500 hover:bg-gray-200 hover:text-gray-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
+            onClick={onClearSelection}
+            aria-label="Fechar informações do avião"
+            title="Fechar"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              className="size-5"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              aria-hidden="true"
+            >
+              <path d="m6 6 12 12M18 6 6 18" />
+            </svg>
+          </button>
+        )}
+      </div>
       <hr className="mb-3 border-t border-gray-300" />
       <div className="space-y-2">
         <DetailRow
